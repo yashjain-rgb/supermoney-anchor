@@ -73,17 +73,17 @@ const generateEmailBody = (userName: string, overdueAmount: number, overdueCount
   }).format(overdueAmount);
 
   return `
-    <div style="font-family: Arial, sans-serif; line-height: 1.6;">
-      <h2>Supermoney Daily Summary</h2>
+    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+      <h2 style="color: #3498db;">Supermoney Daily Summary</h2>
       <p>Hello ${userName},</p>
       <p>Here is your daily summary from the Supermoney Anchor Platform.</p>
-      <div style="background-color: #f2f2f2; padding: 15px; border-radius: 5px; margin: 20px 0;">
-        <h3 style="margin-top: 0;">Overdue Summary</h3>
+      <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; border-left: 4px solid #3498db; margin: 20px 0;">
+        <h3 style="margin-top: 0; color: #333;">Overdue Summary</h3>
         <p>Total overdue amount: <strong>${formattedAmount}</strong></p>
         <p>Number of dealers with overdue payments: <strong>${overdueCount}</strong></p>
       </div>
       <p>For more details, please visit your dashboard:</p>
-      <a href="https://anchor.supermoney.in" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Go to Dashboard</a>
+      <a href="https://anchor.supermoney.in" style="background-color: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">Go to Dashboard</a>
       <p style="margin-top: 30px;">Thank you,</p>
       <p><strong>The Supermoney Team</strong></p>
     </div>
