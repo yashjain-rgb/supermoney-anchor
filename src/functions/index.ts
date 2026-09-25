@@ -91,7 +91,7 @@ const generateEmailBody = (userName: string, overdueAmount: number, overdueCount
 };
 
 // Function to generate specialized email body for ANC011
-const generateANC011EmailBody = (anchorId: string) => {
+const generateANC011EmailBody = (userName: string) => {
     return `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
       <div style="text-align: center; margin-bottom: 20px;">
@@ -101,7 +101,7 @@ const generateANC011EmailBody = (anchorId: string) => {
       <h2 style="color: #3498db; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Supermoney Daily Limit Utilization Summary</h2>
       
       <p>Dear Team,</p>
-      <p>Please find below the Daily Limit Utilization Summary for Anchor ID <strong>${anchorId}</strong>.</p>
+      <p>Please find below the Daily Limit Utilization Summary for <strong>${userName}</strong>.</p>
       
       <div style="background-color: #f9f9f9; border-left: 4px solid #3498db; padding: 15px; margin: 20px 0;">
         <h3 style="margin-top: 0; color: #2c3e50;">📊 Daily Limit Utilization</h3>
@@ -177,7 +177,7 @@ export const sendDailyReports = functions
                     from: `"Supermoney Platform" <noreply@supermoney.in>`,
                     to: [user.emailAddress, 'channelfinance.in@redingtongroup.com'],
                     subject: "Supermoney Daily Limit Utilzation Summary",
-                    html: generateANC011EmailBody(user.externalId),
+                    html: generateANC011EmailBody(user.userName),
                     attachments: [
                         {
                             filename: `Limit_Utilization_Report_${new Date().toISOString().split('T')[0]}.csv`,
