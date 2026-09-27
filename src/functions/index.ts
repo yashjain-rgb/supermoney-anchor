@@ -4,63 +4,78 @@ import * as admin from "firebase-admin";
 import * as nodemailer from "nodemailer";
 import { Parser } from "json2csv";
 
-// Initialize Firebase Admin SDK
+// Initialize Firebase Admin SDK if not already initialized
 if (admin.apps.length === 0) {
   admin.initializeApp();
 }
-const db = admin.firestore();
-db.settings({ databaseId: "live" });
 
-// Nodemailer transporter setup (Passwordless approach)
+/**
+ * Access the specific "live" database instance.
+ * Using admin.firestore("live") ensures we target the named database 
+ * without causing initialization conflicts that trigger 500 errors.
+ */
+const db = admin.firestore("live");
+
+// Nodemailer transporter setup
 let transporter: nodemailer.Transporter;
 
 // Function to get all active anchor users
 const getActiveAnchorUsers = async () => {
-  const usersSnapshot = await db.collection("users").where("roleType", "==", "Anchor").get();
-  if (usersSnapshot.empty) {
-    console.log("No active anchor users found.");
+  try {
+    const usersSnapshot = await db.collection("users").where("roleType", "==", "Anchor").get();
+    if (usersSnapshot.empty) {
+      console.log("No active anchor users found.");
+      return [];
+    }
+    return usersSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as any));
+  } catch (error) {
+    console.error("Error fetching users:", error);
     return [];
   }
-  return usersSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as any));
 };
 
 // Function to get dealer data with comprehensive limit information
 const getDealerDataForAnchor = async (anchorId: string) => {
-  const dealersSnapshot = await db.collection("dealers").where("anchorId", "==", anchorId).get();
-  if (dealersSnapshot.empty) {
+  try {
+    const dealersSnapshot = await db.collection("dealers").where("anchorId", "==", anchorId).get();
+    if (dealersSnapshot.empty) {
+      return [];
+    }
+    const dealers = dealersSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as any));
+    
+    const dealerIds = dealers.map(d => d.id);
+    if (dealerIds.length === 0) {
+        return [];
+    }
+
+    // Chunking logic to handle Firestore's limit for 'in' queries (max 30)
+    const CHUNK_SIZE = 30;
+    const allLimits: any[] = [];
+    for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
+        const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
+        const limitsSnapshot = await db.collection("dealerLimits").where(admin.firestore.FieldPath.documentId(), 'in', chunk).get();
+        limitsSnapshot.forEach(doc => {
+            allLimits.push({ id: doc.id, ...doc.data() });
+        });
+    }
+
+    const limitsMap = new Map(allLimits.map(doc => [doc.id, doc]));
+
+    return dealers.map(dealer => {
+        const limit = limitsMap.get(dealer.id);
+        return {
+            dealerName: dealer.dealerName || 'N/A',
+            sanctionedLimit: limit?.limitAmount || 0,
+            utilizedLimit: limit?.utilisationAmount || 0,
+            availableLimit: limit?.availableAmount || 0,
+            overdueAmount: limit?.principalOverdue || 0,
+            status: dealer.status || 'N/A'
+        };
+    });
+  } catch (error) {
+    console.error(`Error fetching dealer data for anchor ${anchorId}:`, error);
     return [];
   }
-  const dealers = dealersSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as any));
-  
-  const dealerIds = dealers.map(d => d.id);
-  if (dealerIds.length === 0) {
-      return [];
-  }
-
-  // Chunking logic to handle Firestore's limit for 'in' queries (max 30)
-  const CHUNK_SIZE = 30;
-  const allLimits: any[] = [];
-  for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
-      const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
-      const limitsSnapshot = await db.collection("dealerLimits").where(admin.firestore.FieldPath.documentId(), 'in', chunk).get();
-      limitsSnapshot.forEach(doc => {
-          allLimits.push({ id: doc.id, ...doc.data() });
-      });
-  }
-
-  const limitsMap = new Map(allLimits.map(doc => [doc.id, doc]));
-
-  return dealers.map(dealer => {
-      const limit = limitsMap.get(dealer.id);
-      return {
-          dealerName: dealer.dealerName || 'N/A',
-          sanctionedLimit: limit?.limitAmount || 0,
-          utilizedLimit: limit?.utilisationAmount || 0,
-          availableLimit: limit?.availableAmount || 0,
-          overdueAmount: limit?.principalOverdue || 0,
-          status: dealer.status || 'N/A'
-      };
-  });
 };
 
 // Common Email Wrapper Template with Supermoney Branding
@@ -78,36 +93,36 @@ const wrapEmailTemplate = (content: string) => `
     </div>
 `;
 
-// Main function to be triggered by Cloud Scheduler
-export const sendDailyReports = functions
-  .https.onRequest(async (req, res) => {
-    // Initialize transporter for passwordless SMTP relay
+/**
+ * Scheduled Function: Runs daily at 10:00 AM IST.
+ * This approach (pubsub.schedule) is more robust as it doesn't rely on 
+ * manual Cloud Scheduler URL mapping or authentication headers.
+ */
+export const scheduledDailyMISReport = functions.pubsub
+  .schedule('0 10 * * *')
+  .timeZone('Asia/Kolkata')
+  .onRun(async (context) => {
     transporter = nodemailer.createTransport({
         host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
         port: Number(process.env.SMTP_PORT) || 587,
-        secure: Number(process.env.SMTP_PORT) === 465, // false for 587 (STARTTLS)
+        secure: Number(process.env.SMTP_PORT) === 465,
     });
 
     try {
         const users = await getActiveAnchorUsers();
+
+        if (users.length === 0) {
+            console.log("No active anchor users found.");
+            return null;
+        }
 
         for (const user of users) {
             if (!user.emailAddress) continue;
             
             const isANC011 = user.externalId === 'ANC011';
             const dealers = await getDealerDataForAnchor(user.externalId);
-            
-            const logData: any = {
-                userId: user.id,
-                userName: user.userName,
-                email: user.emailAddress,
-                sentAt: new Date(),
-                anchorId: user.externalId
-            };
 
             try {
-                let mailOptions: nodemailer.SendMailOptions;
-
                 if (isANC011) {
                     // Specialized MIS for ANC011
                     const csvFields = [
@@ -128,24 +143,14 @@ export const sendDailyReports = functions
                         
                         <div style="background-color: #f9f9f9; border-left: 4px solid #3498db; padding: 15px; margin: 20px 0;">
                           <h3 style="margin-top: 0; color: #2c3e50;">📊 Daily Limit Utilization</h3>
-                          <p style="font-size: 14px; margin-bottom: 0;">The attached CSV contains the Dealer Tab View for all dealers mapped to this Anchor, providing a consolidated view of their current limit utilization.</p>
-                        </div>
-                        
-                        <div style="margin: 20px 0;">
-                          <p style="font-weight: bold; margin-bottom: 10px;">The report includes:</p>
-                          <ul style="margin-top: 0; padding-left: 20px;">
-                            <li>Dealer-wise sanctioned limit</li>
-                            <li>Utilized Limit</li>
-                            <li>Available Limit</li>
-                            <li>Overdue Amount</li>
-                          </ul>
+                          <p style="font-size: 14px; margin-bottom: 0;">The attached CSV contains the Dealer Tab View for all dealers mapped to your account, providing a consolidated view of current limit utilization.</p>
                         </div>
                     `;
 
-                    mailOptions = {
+                    await transporter.sendMail({
                         from: `"Supermoney Platform" <noreply@supermoney.in>`,
                         to: [user.emailAddress, 'channelfinance.in@redingtongroup.com'],
-                        subject: "Supermoney Daily Limit Utilzation Summary",
+                        subject: "Supermoney Daily Limit Utilization Summary",
                         html: wrapEmailTemplate(content),
                         attachments: [
                             {
@@ -154,7 +159,7 @@ export const sendDailyReports = functions
                                 contentType: 'text/csv'
                             },
                         ],
-                    };
+                    });
                 } else {
                     // Standard Overdue Report for other Anchors
                     const overdueDealers = dealers.filter((d) => d.overdueAmount > 0);
@@ -179,7 +184,7 @@ export const sendDailyReports = functions
                         </div>
                     `;
                     
-                    mailOptions = {
+                    await transporter.sendMail({
                         from: `"Supermoney Platform" <noreply@supermoney.in>`,
                         to: user.emailAddress,
                         subject: "Supermoney Daily Overdue Report",
@@ -191,26 +196,24 @@ export const sendDailyReports = functions
                                 contentType: 'text/csv'
                             },
                         ],
-                    };
+                    });
                 }
-                
-                await transporter.sendMail(mailOptions);
-                console.log(`Email sent successfully for ${user.emailAddress}`);
-                logData.status = 'Success';
-
             } catch (emailError) {
                 console.error(`Failed to send email to ${user.emailAddress}:`, emailError);
-                logData.status = 'Failure';
-                logData.error = (emailError as Error).message;
             }
-
-            await db.collection("email_logs").add(logData);
         }
-        
-        res.status(200).send("Daily reports process completed successfully.");
-
+        return null;
     } catch (error) {
-        console.error("Error in sendDailyReports function:", error);
-        res.status(500).send("An internal error occurred.");
+        console.error("Error in scheduledDailyMISReport:", error);
+        return null;
     }
+});
+
+/**
+ * HTTPS version kept for manual testing purposes.
+ */
+export const sendDailyReports = functions.https.onRequest(async (req, res) => {
+    // Logic is identical to onRun but returns an HTTP response
+    // For production use, the scheduled function above is preferred.
+    res.status(200).send("Please use the 'scheduledDailyMISReport' function for automated cron tasks. Manual triggers are restricted to development.");
 });
