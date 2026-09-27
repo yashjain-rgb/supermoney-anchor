@@ -37,7 +37,7 @@ const getDealerDataForAnchor = async (anchorId: string) => {
       return [];
   }
 
-  // Chunking logic to handle Firestore's limit for 'in' queries
+  // Chunking logic to handle Firestore's limit for 'in' queries (max 30)
   const CHUNK_SIZE = 30;
   const allLimits: any[] = [];
   for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
@@ -63,7 +63,7 @@ const getDealerDataForAnchor = async (anchorId: string) => {
   });
 };
 
-// Common Email Wrapper Template
+// Common Email Wrapper Template with Supermoney Branding
 const wrapEmailTemplate = (content: string) => `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
       <div style="text-align: center; margin-bottom: 20px;">
@@ -158,7 +158,7 @@ export const sendDailyReports = functions
                 } else {
                     // Standard Overdue Report for other Anchors
                     const overdueDealers = dealers.filter((d) => d.overdueAmount > 0);
-                    if (overdueDealers.length === 0) continue; // Skip if no overdue for standard anchors
+                    if (overdueDealers.length === 0) continue; 
 
                     const totalOverdueAmount = overdueDealers.reduce((sum, d) => sum + d.overdueAmount, 0);
                     const formattedAmount = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(totalOverdueAmount);
