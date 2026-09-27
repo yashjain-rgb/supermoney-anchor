@@ -3,64 +3,80 @@ import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
 import * as nodemailer from "nodemailer";
 import { Parser } from "json2csv";
+import { getFirestore } from "firebase-admin/firestore";
 
-// Initialize Firebase Admin SDK
+// Initialize Firebase Admin SDK if not already initialized
 if (admin.apps.length === 0) {
   admin.initializeApp();
 }
-const db = admin.firestore();
-db.settings({ databaseId: "live" });
 
-// Nodemailer transporter setup (Passwordless approach)
+/**
+ * Access the specific "live" database instance.
+ * Using getFirestore(databaseId) is the most reliable way in Cloud Functions
+ * to target a named database without causing initialization conflicts.
+ */
+const db = getFirestore("live");
+
+// Nodemailer transporter setup
 let transporter: nodemailer.Transporter;
 
 // Function to get all active anchor users
 const getActiveAnchorUsers = async () => {
-  const usersSnapshot = await db.collection("users").where("roleType", "==", "Anchor").get();
-  if (usersSnapshot.empty) {
-    console.log("No active anchor users found.");
+  try {
+    const usersSnapshot = await db.collection("users").where("roleType", "==", "Anchor").get();
+    if (usersSnapshot.empty) {
+      console.log("No active anchor users found.");
+      return [];
+    }
+    return usersSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as any));
+  } catch (error) {
+    console.error("Error fetching users:", error);
     return [];
   }
-  return usersSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as any));
 };
 
 // Function to get dealer data with comprehensive limit information
 const getDealerDataForAnchor = async (anchorId: string) => {
-  const dealersSnapshot = await db.collection("dealers").where("anchorId", "==", anchorId).get();
-  if (dealersSnapshot.empty) {
+  try {
+    const dealersSnapshot = await db.collection("dealers").where("anchorId", "==", anchorId).get();
+    if (dealersSnapshot.empty) {
+      return [];
+    }
+    const dealers = dealersSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as any));
+    
+    const dealerIds = dealers.map(d => d.id);
+    if (dealerIds.length === 0) {
+        return [];
+    }
+
+    // Chunking logic to handle Firestore's limit for 'in' queries (max 30)
+    const CHUNK_SIZE = 30;
+    const allLimits: any[] = [];
+    for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
+        const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
+        const limitsSnapshot = await db.collection("dealerLimits").where(admin.firestore.FieldPath.documentId(), 'in', chunk).get();
+        limitsSnapshot.forEach(doc => {
+            allLimits.push({ id: doc.id, ...doc.data() });
+        });
+    }
+
+    const limitsMap = new Map(allLimits.map(doc => [doc.id, doc]));
+
+    return dealers.map(dealer => {
+        const limit = limitsMap.get(dealer.id);
+        return {
+            dealerName: dealer.dealerName || 'N/A',
+            sanctionedLimit: limit?.limitAmount || 0,
+            utilizedLimit: limit?.utilisationAmount || 0,
+            availableLimit: limit?.availableAmount || 0,
+            overdueAmount: limit?.principalOverdue || 0,
+            status: dealer.status || 'N/A'
+        };
+    });
+  } catch (error) {
+    console.error(`Error fetching dealer data for anchor ${anchorId}:`, error);
     return [];
   }
-  const dealers = dealersSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as any));
-  
-  const dealerIds = dealers.map(d => d.id);
-  if (dealerIds.length === 0) {
-      return [];
-  }
-
-  // Chunking logic to handle Firestore's limit for 'in' queries (max 30)
-  const CHUNK_SIZE = 30;
-  const allLimits: any[] = [];
-  for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
-      const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
-      const limitsSnapshot = await db.collection("dealerLimits").where(admin.firestore.FieldPath.documentId(), 'in', chunk).get();
-      limitsSnapshot.forEach(doc => {
-          allLimits.push({ id: doc.id, ...doc.data() });
-      });
-  }
-
-  const limitsMap = new Map(allLimits.map(doc => [doc.id, doc]));
-
-  return dealers.map(dealer => {
-      const limit = limitsMap.get(dealer.id);
-      return {
-          dealerName: dealer.dealerName || 'N/A',
-          sanctionedLimit: limit?.limitAmount || 0,
-          utilizedLimit: limit?.utilisationAmount || 0,
-          availableLimit: limit?.availableAmount || 0,
-          overdueAmount: limit?.principalOverdue || 0,
-          status: dealer.status || 'N/A'
-      };
-  });
 };
 
 // Common Email Wrapper Template with Supermoney Branding
@@ -82,6 +98,7 @@ const wrapEmailTemplate = (content: string) => `
 export const sendDailyReports = functions
   .https.onRequest(async (req, res) => {
     // Initialize transporter for passwordless SMTP relay
+    // Falls back to defaults if environment variables are missing
     transporter = nodemailer.createTransport({
         host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
         port: Number(process.env.SMTP_PORT) || 587,
@@ -90,6 +107,11 @@ export const sendDailyReports = functions
 
     try {
         const users = await getActiveAnchorUsers();
+
+        if (users.length === 0) {
+            res.status(200).send("No active anchor users found to process.");
+            return;
+        }
 
         for (const user of users) {
             if (!user.emailAddress) continue;
@@ -145,7 +167,7 @@ export const sendDailyReports = functions
                     mailOptions = {
                         from: `"Supermoney Platform" <noreply@supermoney.in>`,
                         to: [user.emailAddress, 'channelfinance.in@redingtongroup.com'],
-                        subject: "Supermoney Daily Limit Utilzation Summary",
+                        subject: "Supermoney Daily Limit Utilization Summary",
                         html: wrapEmailTemplate(content),
                         attachments: [
                             {
@@ -211,6 +233,6 @@ export const sendDailyReports = functions
 
     } catch (error) {
         console.error("Error in sendDailyReports function:", error);
-        res.status(500).send("An internal error occurred.");
+        res.status(500).send("An internal error occurred: " + (error instanceof Error ? error.message : "Unknown error"));
     }
 });
