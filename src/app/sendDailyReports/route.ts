@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import * as admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 import * as nodemailer from 'nodemailer';
 import { Parser } from 'json2csv';
 
@@ -49,13 +50,13 @@ async function validateAndProcess(request: Request) {
         return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
-    // Normalize the input token: Remove "Bearer " prefix if it exists
+    // Normalize the input token: Handle both "Bearer <token>" and raw token formats
     const inputToken = authHeader?.startsWith('Bearer ') 
         ? authHeader.substring(7) 
         : authHeader;
 
     if (inputToken !== expectedToken) {
-        console.warn(`Unauthorized access attempt to daily reports. Expected: ${expectedToken.substring(0,4)}... Got: ${inputToken?.substring(0,4)}...`);
+        console.warn(`Unauthorized access attempt to daily reports. Token mismatch.`);
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -73,8 +74,9 @@ async function processDailyReports() {
         admin.initializeApp();
     }
 
-    // Access the specialized "live" database instance
-    const db = admin.firestore("live");
+    // Access the specialized "live" database instance correctly
+    // Use getFirestore from firebase-admin/firestore to target the named database
+    const db = getFirestore("live");
 
     // Setup Nodemailer with environment variables
     const transporter = nodemailer.createTransport({
