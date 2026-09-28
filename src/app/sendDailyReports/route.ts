@@ -3,13 +3,8 @@ import * as admin from 'firebase-admin';
 import * as nodemailer from 'nodemailer';
 import { Parser } from 'json2csv';
 
-// Idempotent initialization of Firebase Admin SDK
-if (!admin.apps.length) {
-    admin.initializeApp();
-}
-
-// Access the specialized "live" database instance
-const db = admin.firestore("live");
+// This line prevents Next.js from trying to statically optimize this route during build
+export const dynamic = 'force-dynamic';
 
 /**
  * Standard email template wrapper with Supermoney branding.
@@ -66,6 +61,14 @@ async function validateAndProcess(request: Request) {
  */
 async function processDailyReports() {
     console.log("Triggering Daily MIS Report via Route Handler...");
+
+    // Idempotent initialization of Firebase Admin SDK
+    if (!admin.apps.length) {
+        admin.initializeApp();
+    }
+
+    // Access the specialized "live" database instance
+    const db = admin.firestore("live");
 
     // Setup Nodemailer with environment variables
     const transporter = nodemailer.createTransport({
