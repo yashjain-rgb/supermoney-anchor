@@ -49,7 +49,13 @@ async function validateAndProcess(request: Request) {
         return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
-    if (authHeader !== `Bearer ${expectedToken}`) {
+    // Normalize the input token: Remove "Bearer " prefix if it exists
+    const inputToken = authHeader?.startsWith('Bearer ') 
+        ? authHeader.substring(7) 
+        : authHeader;
+
+    if (inputToken !== expectedToken) {
+        console.warn(`Unauthorized access attempt to daily reports. Expected: ${expectedToken.substring(0,4)}... Got: ${inputToken?.substring(0,4)}...`);
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
