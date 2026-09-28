@@ -31,14 +31,33 @@ const wrapEmailTemplate = (content: string) => `
 /**
  * Route Handler to handle GET requests for daily reports.
  */
-export async function GET() {
-    return await processDailyReports();
+export async function GET(request: Request) {
+    return await validateAndProcess(request);
 }
 
 /**
  * Route Handler to handle POST requests for daily reports.
  */
-export async function POST() {
+export async function POST(request: Request) {
+    return await validateAndProcess(request);
+}
+
+/**
+ * Validates the Bearer token and triggers the report generation.
+ */
+async function validateAndProcess(request: Request) {
+    const authHeader = request.headers.get('Authorization');
+    const expectedToken = process.env.DEALER_API_SECRET_KEY;
+
+    if (!expectedToken) {
+        console.error("DEALER_API_SECRET_KEY is not set in environment variables.");
+        return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+    }
+
+    if (authHeader !== `Bearer ${expectedToken}`) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     return await processDailyReports();
 }
 
