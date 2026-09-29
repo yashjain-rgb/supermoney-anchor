@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState } from "react";
@@ -23,8 +22,8 @@ export default function TriggerMisButton() {
       try {
         result = JSON.parse(text);
       } catch (e) {
-        // Fallback for non-JSON error responses (like raw 500 errors)
-        result = { error: text || "Server returned an invalid response format." };
+        // Fallback for non-JSON error responses (like raw server crashes or HTML errors)
+        result = { error: text || "Server returned an empty or invalid response." };
       }
 
       if (response.ok) {
@@ -33,8 +32,9 @@ export default function TriggerMisButton() {
           description: result.message || "The MIS report generation has started.",
         });
       } else {
-        const errorMsg = result.details ? `${result.error}: ${result.details}` : result.error;
-        throw new Error(errorMsg || "Failed to trigger MIS");
+        // Construct detailed error message from server response
+        const errorMsg = result.details ? `${result.error}: ${result.details}` : (result.error || "Unknown Server Error");
+        throw new Error(errorMsg);
       }
     } catch (error: any) {
       toast({

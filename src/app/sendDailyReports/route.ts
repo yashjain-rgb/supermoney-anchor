@@ -1,4 +1,3 @@
-
 import { NextResponse } from 'next/server';
 import { initializeApp, getApps, getApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
@@ -38,7 +37,6 @@ async function validateAndProcess(request: Request) {
         return NextResponse.json({ error: "Server configuration error: Token not set." }, { status: 500 });
     }
 
-    // Handle both "Bearer <token>" and raw "<token>" formats
     const inputToken = authHeader?.startsWith('Bearer ') 
         ? authHeader.substring(7) 
         : authHeader;
@@ -57,12 +55,14 @@ async function processDailyReports(isTest: boolean = false) {
     console.log(`Triggering Daily MIS Report via Route Handler (Test Mode: ${isTest})...`);
 
     try {
-        // Initialize the Admin SDK without arguments to use App Hosting defaults
+        // CRITICAL FIX: Explicitly provide the Project ID to ensure the 'cloud-platform' scope is requested
+        // for the named "live" database.
         if (getApps().length === 0) {
-            initializeApp();
+            initializeApp({
+                projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID
+            });
         }
 
-        // Access the "live" database instance modularly
         const db = getFirestore("live");
 
         const transporter = nodemailer.createTransport({
@@ -118,7 +118,6 @@ async function processDailyReports(isTest: boolean = false) {
                 };
             });
 
-            // Recipient logic: if test mode, only send to Yash
             let recipients = isTest ? ['yash.jain@supermoney.in'] : [user.emailAddress];
             
             if (isANC011 && !isTest) {
@@ -201,7 +200,7 @@ async function processDailyReports(isTest: boolean = false) {
     } catch (error: any) {
         console.error("Critical error in reporting route:", error);
         return NextResponse.json({ 
-            error: "Database or Permission Error", 
+            error: "Execution Error", 
             details: error.message,
             code: error.code 
         }, { status: 500 });
