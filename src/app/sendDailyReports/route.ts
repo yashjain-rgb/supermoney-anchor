@@ -61,41 +61,43 @@ async function validateAndProcess(request: Request) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    return await processDailyReports();
+    // Check for test mode query parameter
+    const { searchParams } = new URL(request.url);
+    const isTest = searchParams.get('test') === 'true';
+
+    return await processDailyReports(isTest);
 }
 
 /**
  * Core logic to generate and send daily MIS reports.
  */
-async function processDailyReports() {
-    console.log("Triggering Daily MIS Report via Route Handler...");
-
-    // Get Project ID from environment
+async function processDailyReports(isTest: boolean = false) {
     const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+    console.log(`Triggering Daily MIS Report (Project: ${projectId}, Test Mode: ${isTest})...`);
 
-    // Idempotent initialization of Firebase Admin SDK with explicit project discovery
+    // Robust initialization for serverless environments (App Hosting)
     if (!admin.apps.length) {
         admin.initializeApp({
-            projectId: projectId
+            projectId: projectId,
         });
     }
 
-    // Access the specialized "live" database instance correctly
-    // We use the getter method to ensure scopes are refreshed per request
+    // Use the named database "live"
     const db = getFirestore("live");
 
-    // Setup Nodemailer with environment variables
     const transporter = nodemailer.createTransport({
         host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
         port: Number(process.env.SMTP_PORT) || 587,
         secure: Number(process.env.SMTP_PORT) === 465,
+        auth: {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS,
+        }
     });
 
     try {
-        // 1. Get all active Anchor users
         const usersSnapshot = await db.collection("users").where("roleType", "==", "Anchor").get();
         if (usersSnapshot.empty) {
-            console.log("No active anchor users found.");
             return NextResponse.json({ message: "No active anchor users found." }, { status: 200 });
         }
 
@@ -105,15 +107,13 @@ async function processDailyReports() {
             if (!user.emailAddress) continue;
 
             const isANC011 = user.externalId === 'ANC011';
-
-            // 2. Fetch dealer data for the specific Anchor
             const dealersSnapshot = await db.collection("dealers").where("anchorId", "==", user.externalId).get();
+            
             if (dealersSnapshot.empty) continue;
 
             const dealers = dealersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
             const dealerIds = dealers.map(d => d.id);
 
-            // 3. Fetch limits in chunks (Firestore limit is 30 for 'in' queries)
             const CHUNK_SIZE = 30;
             const allLimits: any[] = [];
             for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
@@ -125,7 +125,6 @@ async function processDailyReports() {
             }
             const limitsMap = new Map(allLimits.map(doc => [doc.id, doc]));
 
-            // 4. Map report data
             const reportData = dealers.map(dealer => {
                 const limit = limitsMap.get(dealer.id);
                 return {
@@ -138,10 +137,15 @@ async function processDailyReports() {
                 };
             });
 
-            // 5. Send report based on Anchor ID
+            // Recipient Logic: If test mode, send only to test user. If standard, send to user.
+            let recipients = isTest ? ['yash.jain@supermoney.in'] : [user.emailAddress];
+            
+            if (isANC011 && !isTest) {
+                recipients.push('channelfinance.in@redingtongroup.com');
+            }
+
             try {
                 if (isANC011) {
-                    // Specialized MIS for Anchor ANC011
                     const csvFields = [
                         { label: 'Dealer Name', value: 'dealerName' },
                         { label: 'Sanctioned Limit', value: 'sanctionedLimit' },
@@ -154,19 +158,19 @@ async function processDailyReports() {
                     const csv = parser.parse(reportData);
 
                     const content = `
-                        <h2 style="color: #3498db; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Daily Limit Utilization Summary</h2>
+                        <h2 style="color: #3498db; border-bottom: 2px solid #3498db; padding-bottom: 10px;">${isTest ? '[TEST] ' : ''}Daily Limit Utilization Summary</h2>
                         <p>Dear Team,</p>
                         <p>Please find below the Daily Limit Utilization Summary for <strong>${user.userName}</strong>.</p>
                         <div style="background-color: #f9f9f9; border-left: 4px solid #3498db; padding: 15px; margin: 20px 0;">
                           <h3 style="margin-top: 0; color: #2c3e50;">📊 Daily Limit Utilization</h3>
-                          <p style="font-size: 14px; margin-bottom: 0;">The attached CSV contains the Dealer Tab View for all dealers mapped to your account, providing a consolidated view of current limit utilization.</p>
+                          <p style="font-size: 14px; margin-bottom: 0;">The attached CSV contains the Dealer Tab View for all dealers mapped to your account.</p>
                         </div>
                     `;
 
                     await transporter.sendMail({
                         from: `"Supermoney Platform" <noreply@supermoney.in>`,
-                        to: [user.emailAddress, 'channelfinance.in@redingtongroup.com'],
-                        subject: "Supermoney Daily Limit Utilization Summary",
+                        to: recipients,
+                        subject: `${isTest ? '[TEST] ' : ''}Supermoney Daily Limit Utilization Summary - ${user.userName}`,
                         html: wrapEmailTemplate(content),
                         attachments: [{
                             filename: `Limit_Utilization_${new Date().toISOString().split('T')[0]}.csv`,
@@ -175,16 +179,15 @@ async function processDailyReports() {
                         }]
                     });
                 } else {
-                    // Standard Overdue Report
                     const overdueDealers = reportData.filter(d => d.overdueAmount > 0);
-                    if (overdueDealers.length === 0) continue;
+                    if (overdueDealers.length === 0 && !isTest) continue;
 
                     const totalOverdue = overdueDealers.reduce((sum, d) => sum + d.overdueAmount, 0);
                     const parser = new Parser({ fields: ["dealerName", "overdueAmount", "status"] });
                     const csv = parser.parse(overdueDealers);
 
                     const content = `
-                        <h2 style="color: #3498db; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Daily Overdue Summary</h2>
+                        <h2 style="color: #3498db; border-bottom: 2px solid #3498db; padding-bottom: 10px;">${isTest ? '[TEST] ' : ''}Daily Overdue Summary</h2>
                         <p>Hello ${user.userName},</p>
                         <p>Here is your daily summary of outstanding payments from the Supermoney Anchor Platform.</p>
                         <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; border-left: 4px solid #3498db; margin: 20px 0;">
@@ -195,8 +198,8 @@ async function processDailyReports() {
 
                     await transporter.sendMail({
                         from: `"Supermoney Platform" <noreply@supermoney.in>`,
-                        to: user.emailAddress,
-                        subject: "Supermoney Daily Overdue Report",
+                        to: recipients,
+                        subject: `${isTest ? '[TEST] ' : ''}Supermoney Daily Overdue Report - ${user.userName}`,
                         html: wrapEmailTemplate(content),
                         attachments: [{
                             filename: `Daily_Overdue_Report_${new Date().toISOString().split('T')[0]}.csv`,
@@ -205,8 +208,14 @@ async function processDailyReports() {
                         }]
                     });
                 }
+
+                // If testing, we only need to process one user to verify email works
+                if (isTest) {
+                    return NextResponse.json({ message: "Test MIS report sent to yash.jain@supermoney.in" }, { status: 200 });
+                }
+
             } catch (err) {
-                console.error(`Failed to send email to ${user.emailAddress}:`, err);
+                console.error(`Failed to send email to ${recipients}:`, err);
             }
         }
 
