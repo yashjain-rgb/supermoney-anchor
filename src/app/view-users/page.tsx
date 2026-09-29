@@ -7,6 +7,7 @@ import { getUsers } from "@/lib/data";
 import { getSession } from "@/lib/session";
 import { redirect } from "next/navigation";
 import ViewUsersTable from "./view-users-table";
+import TriggerMisButton from "@/components/trigger-mis-button";
 
 export default async function ViewUsersPage() {
   const session = await getSession();
@@ -19,7 +20,9 @@ export default async function ViewUsersPage() {
 
   return (
     <>
-      <PageHeader title="View All Users" />
+      <PageHeader title="View All Users">
+        <TriggerMisButton />
+      </PageHeader>
       <Card className="mt-4">
         <CardHeader>
             <CardTitle>User Accounts</CardTitle>
