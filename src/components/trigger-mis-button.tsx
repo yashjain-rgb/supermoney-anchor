@@ -13,8 +13,6 @@ export default function TriggerMisButton() {
   const handleTrigger = async (isTest: boolean) => {
     setIsLoading(true);
     try {
-      // In production, the client doesn't know the DEALER_API_SECRET_KEY.
-      // We'll call a simple server action or endpoint wrapper that injects it.
       const response = await fetch(`/api/run-mis-task?test=${isTest}`, {
           method: 'POST'
       });
@@ -27,7 +25,8 @@ export default function TriggerMisButton() {
           description: result.message || "The MIS report generation has started.",
         });
       } else {
-        throw new Error(result.error || "Failed to trigger MIS");
+        const errorMsg = result.details ? `${result.error}: ${result.details}` : result.error;
+        throw new Error(errorMsg || "Failed to trigger MIS");
       }
     } catch (error: any) {
       toast({

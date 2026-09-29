@@ -21,7 +21,10 @@ export async function POST(request: Request) {
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://anchor.supermoney.in';
   
   try {
-    const response = await fetch(`${baseUrl}/sendDailyReports?test=${isTest}`, {
+    const triggerUrl = `${baseUrl}/sendDailyReports?test=${isTest}`;
+    console.log(`Internal task runner calling: ${triggerUrl}`);
+
+    const response = await fetch(triggerUrl, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${token}`
@@ -29,10 +32,19 @@ export async function POST(request: Request) {
     });
 
     const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
+
+    if (!response.ok) {
+        return NextResponse.json({ 
+            error: data.error || "Execution failed", 
+            details: data.details,
+            status: response.status 
+        }, { status: response.status });
+    }
+
+    return NextResponse.json(data, { status: 200 });
     
   } catch (error: any) {
-    console.error("Error triggering MIS task:", error);
+    console.error("Internal task runner crash:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
