@@ -1,3 +1,4 @@
+
 import { NextResponse } from 'next/server';
 import * as admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
@@ -69,13 +70,18 @@ async function validateAndProcess(request: Request) {
 async function processDailyReports() {
     console.log("Triggering Daily MIS Report via Route Handler...");
 
-    // Idempotent initialization of Firebase Admin SDK
+    // Get Project ID from environment
+    const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+
+    // Idempotent initialization of Firebase Admin SDK with explicit project discovery
     if (!admin.apps.length) {
-        admin.initializeApp();
+        admin.initializeApp({
+            projectId: projectId
+        });
     }
 
     // Access the specialized "live" database instance correctly
-    // Use getFirestore from firebase-admin/firestore to target the named database
+    // We use the getter method to ensure scopes are refreshed per request
     const db = getFirestore("live");
 
     // Setup Nodemailer with environment variables
@@ -83,10 +89,6 @@ async function processDailyReports() {
         host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
         port: Number(process.env.SMTP_PORT) || 587,
         secure: Number(process.env.SMTP_PORT) === 465,
-        auth: (process.env.SMTP_USER && process.env.SMTP_PASS) ? {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS,
-        } : undefined,
     });
 
     try {
