@@ -72,22 +72,27 @@ async function validateAndProcess(request: Request) {
  * Core logic to generate and send daily MIS reports.
  */
 async function processDailyReports(isTest: boolean = false) {
-    console.log(`Triggering Daily MIS Report via Route Handler (Test Mode: ${isTest})...`);
-
     const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+    console.log(`Triggering Daily MIS Report (Project: ${projectId}, Test Mode: ${isTest})...`);
 
+    // Robust initialization for serverless environments (App Hosting)
     if (!admin.apps.length) {
         admin.initializeApp({
             projectId: projectId,
         });
     }
 
+    // Use the named database "live"
     const db = getFirestore("live");
 
     const transporter = nodemailer.createTransport({
         host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
         port: Number(process.env.SMTP_PORT) || 587,
         secure: Number(process.env.SMTP_PORT) === 465,
+        auth: {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS,
+        }
     });
 
     try {
