@@ -81,6 +81,7 @@ async function processDailyReports() {
     }
 
     // Access the specialized "live" database instance correctly
+    // We use the getter method to ensure scopes are refreshed per request
     const db = getFirestore("live");
 
     // Setup Nodemailer with environment variables
