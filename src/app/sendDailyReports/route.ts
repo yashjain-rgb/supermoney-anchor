@@ -7,6 +7,7 @@ import { Parser } from 'json2csv';
 
 export const dynamic = 'force-dynamic';
 
+// Common Email Wrapper Template with Supermoney Branding
 const wrapEmailTemplate = (content: string) => `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
       <div style="text-align: center; margin-bottom: 20px;">
@@ -37,6 +38,7 @@ async function validateAndProcess(request: Request) {
         return NextResponse.json({ error: "Server configuration error: Token not set." }, { status: 500 });
     }
 
+    // Handle both "Bearer <token>" and raw "<token>" formats
     const inputToken = authHeader?.startsWith('Bearer ') 
         ? authHeader.substring(7) 
         : authHeader;
@@ -52,16 +54,16 @@ async function validateAndProcess(request: Request) {
 }
 
 async function processDailyReports(isTest: boolean = false) {
-    console.log(`Triggering Daily MIS Report (Test Mode: ${isTest})...`);
+    console.log(`Triggering Daily MIS Report via Route Handler (Test Mode: ${isTest})...`);
 
     try {
-        // Explicit initialization with project ID to fix scope issues in App Hosting
-        const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-        const app = getApps().length === 0 
-            ? initializeApp({ projectId }) 
-            : getApp();
+        // Initialize the Admin SDK without arguments to use App Hosting defaults
+        if (getApps().length === 0) {
+            initializeApp();
+        }
 
-        const db = getFirestore(app, "live");
+        // Access the "live" database instance modularly
+        const db = getFirestore("live");
 
         const transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
@@ -86,19 +88,21 @@ async function processDailyReports(isTest: boolean = false) {
             const isANC011 = user.externalId === 'ANC011';
             const dealersSnapshot = await db.collection("dealers").where("anchorId", "==", user.externalId).get();
             
-            if (dealersSnapshot.empty) continue;
+            if (dealersSnapshot.empty && !isTest) continue;
 
             const dealers = dealersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
             const dealerIds = dealers.map(d => d.id);
 
-            const CHUNK_SIZE = 30;
             const allLimits: any[] = [];
-            for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
-                const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
-                const limitsSnapshot = await db.collection("dealerLimits")
-                    .where('__name__', 'in', chunk)
-                    .get();
-                limitsSnapshot.forEach(doc => allLimits.push({ id: doc.id, ...doc.data() }));
+            if (dealerIds.length > 0) {
+                const CHUNK_SIZE = 30;
+                for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
+                    const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
+                    const limitsSnapshot = await db.collection("dealerLimits")
+                        .where('__name__', 'in', chunk)
+                        .get();
+                    limitsSnapshot.forEach(doc => allLimits.push({ id: doc.id, ...doc.data() }));
+                }
             }
             const limitsMap = new Map(allLimits.map(doc => [doc.id, doc]));
 
@@ -114,6 +118,7 @@ async function processDailyReports(isTest: boolean = false) {
                 };
             });
 
+            // Recipient logic: if test mode, only send to Yash
             let recipients = isTest ? ['yash.jain@supermoney.in'] : [user.emailAddress];
             
             if (isANC011 && !isTest) {
@@ -187,6 +192,7 @@ async function processDailyReports(isTest: boolean = false) {
 
             } catch (err) {
                 console.error(`Email attempt failed:`, err);
+                if (isTest) throw err;
             }
         }
 
@@ -195,7 +201,7 @@ async function processDailyReports(isTest: boolean = false) {
     } catch (error: any) {
         console.error("Critical error in reporting route:", error);
         return NextResponse.json({ 
-            error: "Internal Server Error", 
+            error: "Database or Permission Error", 
             details: error.message,
             code: error.code 
         }, { status: 500 });

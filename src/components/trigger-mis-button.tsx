@@ -17,7 +17,15 @@ export default function TriggerMisButton() {
           method: 'POST'
       });
       
-      const result = await response.json();
+      const text = await response.text();
+      let result;
+      
+      try {
+        result = JSON.parse(text);
+      } catch (e) {
+        // Fallback for non-JSON error responses (like raw 500 errors)
+        result = { error: text || "Server returned an invalid response format." };
+      }
 
       if (response.ok) {
         toast({
