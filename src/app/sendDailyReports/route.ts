@@ -1,6 +1,6 @@
 
 import { NextResponse } from 'next/server';
-import { initializeApp, getApps } from 'firebase-admin/app';
+import { initializeApp, getApps, getApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import * as nodemailer from 'nodemailer';
 import { Parser } from 'json2csv';
@@ -38,6 +38,7 @@ async function validateAndProcess(request: Request) {
         return NextResponse.json({ error: "Server configuration error: Token not set." }, { status: 500 });
     }
 
+    // Handle both "Bearer <token>" and raw "<token>" formats
     const inputToken = authHeader?.startsWith('Bearer ') 
         ? authHeader.substring(7) 
         : authHeader;
@@ -56,13 +57,12 @@ async function processDailyReports(isTest: boolean = false) {
     console.log(`Triggering Daily MIS Report via Route Handler (Test Mode: ${isTest})...`);
 
     try {
-        // Use default initialization for the environment (App Hosting/Cloud Run)
-        // This is the most reliable way to inherit the correct scopes.
+        // Initialize the Admin SDK without arguments to use App Hosting defaults
         if (getApps().length === 0) {
             initializeApp();
         }
 
-        // Access the "live" database instance
+        // Access the "live" database instance modularly
         const db = getFirestore("live");
 
         const transporter = nodemailer.createTransport({
@@ -88,19 +88,21 @@ async function processDailyReports(isTest: boolean = false) {
             const isANC011 = user.externalId === 'ANC011';
             const dealersSnapshot = await db.collection("dealers").where("anchorId", "==", user.externalId).get();
             
-            if (dealersSnapshot.empty) continue;
+            if (dealersSnapshot.empty && !isTest) continue;
 
             const dealers = dealersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
             const dealerIds = dealers.map(d => d.id);
 
-            const CHUNK_SIZE = 30;
             const allLimits: any[] = [];
-            for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
-                const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
-                const limitsSnapshot = await db.collection("dealerLimits")
-                    .where('__name__', 'in', chunk)
-                    .get();
-                limitsSnapshot.forEach(doc => allLimits.push({ id: doc.id, ...doc.data() }));
+            if (dealerIds.length > 0) {
+                const CHUNK_SIZE = 30;
+                for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
+                    const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
+                    const limitsSnapshot = await db.collection("dealerLimits")
+                        .where('__name__', 'in', chunk)
+                        .get();
+                    limitsSnapshot.forEach(doc => allLimits.push({ id: doc.id, ...doc.data() }));
+                }
             }
             const limitsMap = new Map(allLimits.map(doc => [doc.id, doc]));
 
@@ -199,7 +201,7 @@ async function processDailyReports(isTest: boolean = false) {
     } catch (error: any) {
         console.error("Critical error in reporting route:", error);
         return NextResponse.json({ 
-            error: "Internal Server Error", 
+            error: "Database or Permission Error", 
             details: error.message,
             code: error.code 
         }, { status: 500 });
