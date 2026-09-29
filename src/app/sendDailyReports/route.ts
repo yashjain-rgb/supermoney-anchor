@@ -25,77 +25,59 @@ const wrapEmailTemplate = (content: string) => `
     </div>
 `;
 
-/**
- * Route Handler to handle GET requests for daily reports.
- */
 export async function GET(request: Request) {
     return await validateAndProcess(request);
 }
 
-/**
- * Route Handler to handle POST requests for daily reports.
- */
 export async function POST(request: Request) {
     return await validateAndProcess(request);
 }
 
-/**
- * Validates the Bearer token and triggers the report generation.
- */
 async function validateAndProcess(request: Request) {
     const authHeader = request.headers.get('Authorization');
     const expectedToken = process.env.DEALER_API_SECRET_KEY;
 
     if (!expectedToken) {
-        console.error("DEALER_API_SECRET_KEY is not set in environment variables.");
-        return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+        return NextResponse.json({ error: "Server configuration error: Token not set." }, { status: 500 });
     }
 
-    // Normalize the input token: Handle both "Bearer <token>" and raw token formats
     const inputToken = authHeader?.startsWith('Bearer ') 
         ? authHeader.substring(7) 
         : authHeader;
 
     if (inputToken !== expectedToken) {
-        console.warn(`Unauthorized access attempt to daily reports. Token mismatch.`);
+        console.warn(`Unauthorized access attempt. Received: ${inputToken ? '***' : 'none'}`);
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Check for test mode query parameter
     const { searchParams } = new URL(request.url);
     const isTest = searchParams.get('test') === 'true';
 
     return await processDailyReports(isTest);
 }
 
-/**
- * Core logic to generate and send daily MIS reports.
- */
 async function processDailyReports(isTest: boolean = false) {
-    const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
-    console.log(`Triggering Daily MIS Report (Project: ${projectId}, Test Mode: ${isTest})...`);
-
-    // Robust initialization for serverless environments (App Hosting)
-    if (!admin.apps.length) {
-        admin.initializeApp({
-            projectId: projectId,
-        });
-    }
-
-    // Use the named database "live"
-    const db = getFirestore("live");
-
-    const transporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
-        port: Number(process.env.SMTP_PORT) || 587,
-        secure: Number(process.env.SMTP_PORT) === 465,
-        auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS,
-        }
-    });
+    console.log(`Triggering Daily MIS Report via Route Handler (Test Mode: ${isTest})...`);
 
     try {
+        // Initialize Admin SDK without arguments for automatic ADC discovery in App Hosting
+        if (!admin.apps.length) {
+            admin.initializeApp();
+        }
+
+        // Access the named database "live"
+        const db = getFirestore("live");
+
+        const transporter = nodemailer.createTransport({
+            host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
+            port: Number(process.env.SMTP_PORT) || 587,
+            secure: Number(process.env.SMTP_PORT) === 465,
+            auth: {
+                user: process.env.SMTP_USER,
+                pass: process.env.SMTP_PASS,
+            }
+        });
+
         const usersSnapshot = await db.collection("users").where("roleType", "==", "Anchor").get();
         if (usersSnapshot.empty) {
             return NextResponse.json({ message: "No active anchor users found." }, { status: 200 });
@@ -137,7 +119,6 @@ async function processDailyReports(isTest: boolean = false) {
                 };
             });
 
-            // Recipient Logic: If test mode, send only to test user. If standard, send to user.
             let recipients = isTest ? ['yash.jain@supermoney.in'] : [user.emailAddress];
             
             if (isANC011 && !isTest) {
@@ -161,10 +142,6 @@ async function processDailyReports(isTest: boolean = false) {
                         <h2 style="color: #3498db; border-bottom: 2px solid #3498db; padding-bottom: 10px;">${isTest ? '[TEST] ' : ''}Daily Limit Utilization Summary</h2>
                         <p>Dear Team,</p>
                         <p>Please find below the Daily Limit Utilization Summary for <strong>${user.userName}</strong>.</p>
-                        <div style="background-color: #f9f9f9; border-left: 4px solid #3498db; padding: 15px; margin: 20px 0;">
-                          <h3 style="margin-top: 0; color: #2c3e50;">📊 Daily Limit Utilization</h3>
-                          <p style="font-size: 14px; margin-bottom: 0;">The attached CSV contains the Dealer Tab View for all dealers mapped to your account.</p>
-                        </div>
                     `;
 
                     await transporter.sendMail({
@@ -209,13 +186,12 @@ async function processDailyReports(isTest: boolean = false) {
                     });
                 }
 
-                // If testing, we only need to process one user to verify email works
                 if (isTest) {
                     return NextResponse.json({ message: "Test MIS report sent to yash.jain@supermoney.in" }, { status: 200 });
                 }
 
             } catch (err) {
-                console.error(`Failed to send email to ${recipients}:`, err);
+                console.error(`Email attempt failed:`, err);
             }
         }
 
@@ -223,6 +199,10 @@ async function processDailyReports(isTest: boolean = false) {
 
     } catch (error: any) {
         console.error("Critical error in reporting route:", error);
-        return NextResponse.json({ error: error.message || "An internal error occurred." }, { status: 500 });
+        return NextResponse.json({ 
+            error: "Internal Server Error", 
+            details: error.message,
+            code: error.code 
+        }, { status: 500 });
     }
 }
