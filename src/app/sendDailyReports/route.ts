@@ -1,16 +1,12 @@
 
 import { NextResponse } from 'next/server';
-import * as admin from 'firebase-admin';
+import { initializeApp, getApps, getApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import * as nodemailer from 'nodemailer';
 import { Parser } from 'json2csv';
 
-// This line prevents Next.js from trying to statically optimize this route during build
 export const dynamic = 'force-dynamic';
 
-/**
- * Standard email template wrapper with Supermoney branding.
- */
 const wrapEmailTemplate = (content: string) => `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
       <div style="text-align: center; margin-bottom: 20px;">
@@ -46,7 +42,6 @@ async function validateAndProcess(request: Request) {
         : authHeader;
 
     if (inputToken !== expectedToken) {
-        console.warn(`Unauthorized access attempt. Received: ${inputToken ? '***' : 'none'}`);
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -57,16 +52,16 @@ async function validateAndProcess(request: Request) {
 }
 
 async function processDailyReports(isTest: boolean = false) {
-    console.log(`Triggering Daily MIS Report via Route Handler (Test Mode: ${isTest})...`);
+    console.log(`Triggering Daily MIS Report (Test Mode: ${isTest})...`);
 
     try {
-        // Initialize Admin SDK without arguments for automatic ADC discovery in App Hosting
-        if (!admin.apps.length) {
-            admin.initializeApp();
-        }
+        // Explicit initialization with project ID to fix scope issues in App Hosting
+        const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+        const app = getApps().length === 0 
+            ? initializeApp({ projectId }) 
+            : getApp();
 
-        // Access the named database "live"
-        const db = getFirestore("live");
+        const db = getFirestore(app, "live");
 
         const transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
@@ -101,7 +96,7 @@ async function processDailyReports(isTest: boolean = false) {
             for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
                 const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
                 const limitsSnapshot = await db.collection("dealerLimits")
-                    .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+                    .where('__name__', 'in', chunk)
                     .get();
                 limitsSnapshot.forEach(doc => allLimits.push({ id: doc.id, ...doc.data() }));
             }

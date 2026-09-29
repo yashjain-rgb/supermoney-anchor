@@ -2,14 +2,9 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/session';
 
-/**
- * Internal API to allow Admin to trigger the MIS report route handler
- * without exposing the Bearer token to the client-side.
- */
 export async function POST(request: Request) {
   const session = await getSession();
 
-  // 1. Authorization: Only Admins can trigger this
   if (!session || session.roleType !== 'Admin') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -18,6 +13,7 @@ export async function POST(request: Request) {
   const isTest = searchParams.get('test') === 'true';
   
   const token = process.env.DEALER_API_SECRET_KEY;
+  // Use internal communication if possible, but standard fetch to the public URL is safer for testing App Hosting rewrites
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://anchor.supermoney.in';
   
   try {
@@ -36,7 +32,7 @@ export async function POST(request: Request) {
     if (!response.ok) {
         return NextResponse.json({ 
             error: data.error || "Execution failed", 
-            details: data.details,
+            details: data.details || "Check server logs for Permission Denied errors.",
             status: response.status 
         }, { status: response.status });
     }
@@ -45,6 +41,6 @@ export async function POST(request: Request) {
     
   } catch (error: any) {
     console.error("Internal task runner crash:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to connect to trigger route.", details: error.message }, { status: 500 });
   }
 }
