@@ -73,15 +73,16 @@ async function processDailyReports() {
     // Get Project ID from environment
     const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
 
-    // Idempotent initialization of Firebase Admin SDK with explicit project discovery
+    // Idempotent initialization of Firebase Admin SDK
+    // In App Hosting, explicitly requesting broad scopes is often necessary for named databases
     if (!admin.apps.length) {
         admin.initializeApp({
-            projectId: projectId
+            projectId: projectId,
         });
     }
 
-    // Access the specialized "live" database instance correctly
-    // We use the getter method to ensure scopes are refreshed per request
+    // Access the specialized "live" database instance
+    // Modular getFirestore sub-module call is standard for v12 named database access
     const db = getFirestore("live");
 
     // Setup Nodemailer with environment variables
