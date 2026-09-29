@@ -1,12 +1,13 @@
 
 import { NextResponse } from 'next/server';
-import { initializeApp, getApps, getApp } from 'firebase-admin/app';
+import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import * as nodemailer from 'nodemailer';
 import { Parser } from 'json2csv';
 
 export const dynamic = 'force-dynamic';
 
+// Common Email Wrapper Template with Supermoney Branding
 const wrapEmailTemplate = (content: string) => `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
       <div style="text-align: center; margin-bottom: 20px;">
@@ -52,16 +53,17 @@ async function validateAndProcess(request: Request) {
 }
 
 async function processDailyReports(isTest: boolean = false) {
-    console.log(`Triggering Daily MIS Report (Test Mode: ${isTest})...`);
+    console.log(`Triggering Daily MIS Report via Route Handler (Test Mode: ${isTest})...`);
 
     try {
-        // Explicit initialization with project ID to fix scope issues in App Hosting
-        const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-        const app = getApps().length === 0 
-            ? initializeApp({ projectId }) 
-            : getApp();
+        // Use default initialization for the environment (App Hosting/Cloud Run)
+        // This is the most reliable way to inherit the correct scopes.
+        if (getApps().length === 0) {
+            initializeApp();
+        }
 
-        const db = getFirestore(app, "live");
+        // Access the "live" database instance
+        const db = getFirestore("live");
 
         const transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
@@ -114,6 +116,7 @@ async function processDailyReports(isTest: boolean = false) {
                 };
             });
 
+            // Recipient logic: if test mode, only send to Yash
             let recipients = isTest ? ['yash.jain@supermoney.in'] : [user.emailAddress];
             
             if (isANC011 && !isTest) {
@@ -187,6 +190,7 @@ async function processDailyReports(isTest: boolean = false) {
 
             } catch (err) {
                 console.error(`Email attempt failed:`, err);
+                if (isTest) throw err;
             }
         }
 
