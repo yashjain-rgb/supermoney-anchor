@@ -1,9 +1,14 @@
 import { NextResponse } from 'next/server';
-import * as admin from 'firebase-admin';
+import { initializeApp, getApps, getApp } from 'firebase-admin/app';
+import { getFirestore, FieldPath } from 'firebase-admin/firestore';
 import * as nodemailer from 'nodemailer';
 import { Parser } from 'json2csv';
 
 export const dynamic = 'force-dynamic';
+
+// Initialize Firebase Admin modularly
+const firebaseApp = getApps().length === 0 ? initializeApp() : getApp();
+const liveDb = getFirestore(firebaseApp, 'live');
 
 const wrapEmailTemplate = (content: string) => `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
@@ -32,7 +37,7 @@ async function validateAndProcess(request: Request) {
     const expectedToken = process.env.DEALER_API_SECRET_KEY;
 
     if (!expectedToken) {
-        return NextResponse.json({ error: "Execution Error", details: "DEALER_API_SECRET_KEY is not set in environment variables." }, { status: 500 });
+        return NextResponse.json({ error: "Execution Error", details: "DEALER_API_SECRET_KEY is not set." }, { status: 500 });
     }
 
     const inputToken = authHeader?.startsWith('Bearer ') 
@@ -40,8 +45,7 @@ async function validateAndProcess(request: Request) {
         : authHeader;
 
     if (inputToken !== expectedToken) {
-        console.warn("MIS Trigger: Unauthorized attempt or token mismatch.");
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        return NextResponse.json({ error: "Unauthorized", details: "Token mismatch." }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -52,22 +56,6 @@ async function validateAndProcess(request: Request) {
 
 async function processDailyReports(isTest: boolean = false) {
     try {
-        const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'anchorlink-g5wbd';
-        
-        // Use a single app instance with explicit project ID
-        const app = admin.apps.length === 0 
-            ? admin.initializeApp({ projectId })
-            : admin.app();
-
-        // Explicitly get the firestore instance for the "live" database
-        // Passing the app instance helps resolve scope issues in serverless environments
-        const db = admin.firestore(app).databaseId === "live" 
-            ? admin.firestore(app) 
-            : admin.firestore(app).databaseId !== "live" ? admin.firestore(app).databaseId === "(default)" ? admin.firestore(app) : admin.firestore(app) : admin.firestore(app);
-            
-        // Correct way to target a named database in v12 barrel import
-        const liveDb = (admin.firestore(app) as any).database ? (admin.firestore(app) as any).database("live") : admin.firestore(app);
-
         const transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
             port: Number(process.env.SMTP_PORT) || 587,
@@ -78,7 +66,7 @@ async function processDailyReports(isTest: boolean = false) {
             }
         });
 
-        // Use liveDb for queries
+        // Use liveDb (targeting the "live" database)
         const usersSnapshot = await liveDb.collection("users").where("roleType", "==", "Anchor").get();
         
         if (usersSnapshot.empty) {
@@ -104,7 +92,7 @@ async function processDailyReports(isTest: boolean = false) {
                 for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
                     const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
                     const limitsSnapshot = await liveDb.collection("dealerLimits")
-                        .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+                        .where(FieldPath.documentId(), 'in', chunk)
                         .get();
                     limitsSnapshot.forEach(doc => allLimits.push({ id: doc.id, ...doc.data() }));
                 }
@@ -123,6 +111,7 @@ async function processDailyReports(isTest: boolean = false) {
                 };
             });
 
+            // TEST MODE: Only send one email to Yash
             let recipients = isTest ? ['yash.jain@supermoney.in'] : [user.emailAddress];
             
             if (isANC011 && !isTest) {
@@ -190,12 +179,13 @@ async function processDailyReports(isTest: boolean = false) {
                     });
                 }
 
+                // If test mode, stop after first successful send
                 if (isTest) {
                     return NextResponse.json({ message: "Test MIS report sent to yash.jain@supermoney.in" }, { status: 200 });
                 }
 
             } catch (err: any) {
-                console.error(`Email attempt failed for ${user.emailAddress}:`, err);
+                console.error(`Email failed for ${user.emailAddress}:`, err);
                 if (isTest) throw err;
             }
         }
@@ -205,7 +195,7 @@ async function processDailyReports(isTest: boolean = false) {
     } catch (error: any) {
         console.error("Critical error in reporting route:", error);
         return NextResponse.json({ 
-            error: "Database or Permission Error", 
+            error: "Permission or Scope Error", 
             details: error.message,
             code: error.code 
         }, { status: 500 });

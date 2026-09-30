@@ -35,13 +35,13 @@ export async function POST(request: Request) {
     try {
         data = JSON.parse(text);
     } catch (e) {
-        data = { error: "Non-JSON Response", details: text.substring(0, 300) };
+        data = { error: "Server Error", details: text.substring(0, 500) };
     }
 
     if (!response.ok) {
         return NextResponse.json({ 
             error: data.error || "Internal Server Error", 
-            details: data.details || `Server returned ${response.status}: ${text.substring(0, 100)}`,
+            details: data.details || `HTTP ${response.status}`,
             status: response.status 
         }, { status: response.status });
     }
