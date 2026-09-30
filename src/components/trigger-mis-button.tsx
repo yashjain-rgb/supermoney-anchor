@@ -22,8 +22,7 @@ export default function TriggerMisButton() {
       try {
         result = JSON.parse(text);
       } catch (e) {
-        // Fallback for non-JSON error responses (like raw server crashes or HTML errors)
-        result = { error: text || "Server returned an empty or invalid response." };
+        result = { error: "Server Crash", details: text || "Invalid response format." };
       }
 
       if (response.ok) {
@@ -32,8 +31,7 @@ export default function TriggerMisButton() {
           description: result.message || "The MIS report generation has started.",
         });
       } else {
-        // Construct detailed error message from server response
-        const errorMsg = result.details ? `${result.error}: ${result.details}` : (result.error || "Unknown Server Error");
+        const errorMsg = result.details ? `${result.error}: ${result.details}` : (result.error || "Unknown Error");
         throw new Error(errorMsg);
       }
     } catch (error: any) {

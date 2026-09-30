@@ -12,7 +12,6 @@ export async function POST(request: Request) {
   const isTest = searchParams.get('test') === 'true';
   
   const token = process.env.DEALER_API_SECRET_KEY;
-  // Use internal communication if possible, but standard fetch to the public URL is safer for testing App Hosting rewrites
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://anchor.supermoney.in';
   
   try {
@@ -26,7 +25,13 @@ export async function POST(request: Request) {
         }
     });
 
-    const data = await response.json();
+    const text = await response.text();
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch (e) {
+        data = { error: "Non-JSON response from server", details: text.substring(0, 500) };
+    }
 
     if (!response.ok) {
         return NextResponse.json({ 

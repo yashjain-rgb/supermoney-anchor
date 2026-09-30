@@ -1,12 +1,11 @@
 import { NextResponse } from 'next/server';
-import { initializeApp, getApps, getApp } from 'firebase-admin/app';
+import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import * as nodemailer from 'nodemailer';
 import { Parser } from 'json2csv';
 
 export const dynamic = 'force-dynamic';
 
-// Common Email Wrapper Template with Supermoney Branding
 const wrapEmailTemplate = (content: string) => `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
       <div style="text-align: center; margin-bottom: 20px;">
@@ -34,7 +33,7 @@ async function validateAndProcess(request: Request) {
     const expectedToken = process.env.DEALER_API_SECRET_KEY;
 
     if (!expectedToken) {
-        return NextResponse.json({ error: "Server configuration error: Token not set." }, { status: 500 });
+        return NextResponse.json({ error: "Execution Error", details: "DEALER_API_SECRET_KEY is not set in environment variables." }, { status: 500 });
     }
 
     const inputToken = authHeader?.startsWith('Bearer ') 
@@ -52,17 +51,15 @@ async function validateAndProcess(request: Request) {
 }
 
 async function processDailyReports(isTest: boolean = false) {
-    console.log(`Triggering Daily MIS Report via Route Handler (Test Mode: ${isTest})...`);
-
     try {
-        // CRITICAL FIX: Explicitly provide the Project ID to ensure the 'cloud-platform' scope is requested
-        // for the named "live" database.
+        // Force initialize with specific project ID to ensure scope discovery for named databases
         if (getApps().length === 0) {
             initializeApp({
-                projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID
+                projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'anchorlink-g5wbd'
             });
         }
 
+        // Modular Firestore call is required for named databases in v12+
         const db = getFirestore("live");
 
         const transporter = nodemailer.createTransport({
@@ -189,7 +186,7 @@ async function processDailyReports(isTest: boolean = false) {
                     return NextResponse.json({ message: "Test MIS report sent to yash.jain@supermoney.in" }, { status: 200 });
                 }
 
-            } catch (err) {
+            } catch (err: any) {
                 console.error(`Email attempt failed:`, err);
                 if (isTest) throw err;
             }
@@ -202,6 +199,7 @@ async function processDailyReports(isTest: boolean = false) {
         return NextResponse.json({ 
             error: "Execution Error", 
             details: error.message,
+            stack: error.stack,
             code: error.code 
         }, { status: 500 });
     }
