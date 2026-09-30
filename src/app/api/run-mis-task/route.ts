@@ -1,4 +1,3 @@
-
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/session';
 
@@ -6,33 +5,43 @@ export async function POST(request: Request) {
   const session = await getSession();
 
   if (!session || session.roleType !== 'Admin') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ error: "Unauthorized", details: "Admin role required." }, { status: 401 });
   }
 
   const { searchParams } = new URL(request.url);
   const isTest = searchParams.get('test') === 'true';
   
   const token = process.env.DEALER_API_SECRET_KEY;
-  // Use internal communication if possible, but standard fetch to the public URL is safer for testing App Hosting rewrites
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://anchor.supermoney.in';
   
+  if (!token) {
+    return NextResponse.json({ error: "Configuration Error", details: "DEALER_API_SECRET_KEY is missing." }, { status: 500 });
+  }
+
   try {
     const triggerUrl = `${baseUrl}/sendDailyReports?test=${isTest}`;
-    console.log(`Internal task runner calling: ${triggerUrl}`);
+    console.log(`Triggering MIS task: ${triggerUrl}`);
 
     const response = await fetch(triggerUrl, {
         method: 'POST',
         headers: {
-            'Authorization': `Bearer ${token}`
+            'Authorization': `Bearer ${token}`,
+            'Cache-Control': 'no-cache'
         }
     });
 
-    const data = await response.json();
+    const text = await response.text();
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch (e) {
+        data = { error: "Server Error", details: text.substring(0, 500) };
+    }
 
     if (!response.ok) {
         return NextResponse.json({ 
-            error: data.error || "Execution failed", 
-            details: data.details || "Check server logs for Permission Denied errors.",
+            error: data.error || "Internal Server Error", 
+            details: data.details || `HTTP ${response.status}`,
             status: response.status 
         }, { status: response.status });
     }
@@ -40,7 +49,7 @@ export async function POST(request: Request) {
     return NextResponse.json(data, { status: 200 });
     
   } catch (error: any) {
-    console.error("Internal task runner crash:", error);
-    return NextResponse.json({ error: "Failed to connect to trigger route.", details: error.message }, { status: 500 });
+    console.error("MIS Task Runner Error:", error);
+    return NextResponse.json({ error: "Connection Error", details: error.message }, { status: 500 });
   }
 }

@@ -1,13 +1,15 @@
-
 import { NextResponse } from 'next/server';
 import { initializeApp, getApps, getApp } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, FieldPath } from 'firebase-admin/firestore';
 import * as nodemailer from 'nodemailer';
 import { Parser } from 'json2csv';
 
 export const dynamic = 'force-dynamic';
 
-// Common Email Wrapper Template with Supermoney Branding
+// Initialize Firebase Admin modularly
+const firebaseApp = getApps().length === 0 ? initializeApp() : getApp();
+const liveDb = getFirestore(firebaseApp, 'live');
+
 const wrapEmailTemplate = (content: string) => `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
       <div style="text-align: center; margin-bottom: 20px;">
@@ -35,16 +37,15 @@ async function validateAndProcess(request: Request) {
     const expectedToken = process.env.DEALER_API_SECRET_KEY;
 
     if (!expectedToken) {
-        return NextResponse.json({ error: "Server configuration error: Token not set." }, { status: 500 });
+        return NextResponse.json({ error: "Execution Error", details: "DEALER_API_SECRET_KEY is not set." }, { status: 500 });
     }
 
-    // Handle both "Bearer <token>" and raw "<token>" formats
     const inputToken = authHeader?.startsWith('Bearer ') 
         ? authHeader.substring(7) 
         : authHeader;
 
     if (inputToken !== expectedToken) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        return NextResponse.json({ error: "Unauthorized", details: "Token mismatch." }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -54,17 +55,7 @@ async function validateAndProcess(request: Request) {
 }
 
 async function processDailyReports(isTest: boolean = false) {
-    console.log(`Triggering Daily MIS Report via Route Handler (Test Mode: ${isTest})...`);
-
     try {
-        // Initialize the Admin SDK without arguments to use App Hosting defaults
-        if (getApps().length === 0) {
-            initializeApp();
-        }
-
-        // Access the "live" database instance modularly
-        const db = getFirestore("live");
-
         const transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
             port: Number(process.env.SMTP_PORT) || 587,
@@ -75,7 +66,9 @@ async function processDailyReports(isTest: boolean = false) {
             }
         });
 
-        const usersSnapshot = await db.collection("users").where("roleType", "==", "Anchor").get();
+        // Use liveDb (targeting the "live" database)
+        const usersSnapshot = await liveDb.collection("users").where("roleType", "==", "Anchor").get();
+        
         if (usersSnapshot.empty) {
             return NextResponse.json({ message: "No active anchor users found." }, { status: 200 });
         }
@@ -86,7 +79,7 @@ async function processDailyReports(isTest: boolean = false) {
             if (!user.emailAddress) continue;
 
             const isANC011 = user.externalId === 'ANC011';
-            const dealersSnapshot = await db.collection("dealers").where("anchorId", "==", user.externalId).get();
+            const dealersSnapshot = await liveDb.collection("dealers").where("anchorId", "==", user.externalId).get();
             
             if (dealersSnapshot.empty && !isTest) continue;
 
@@ -98,8 +91,8 @@ async function processDailyReports(isTest: boolean = false) {
                 const CHUNK_SIZE = 30;
                 for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
                     const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
-                    const limitsSnapshot = await db.collection("dealerLimits")
-                        .where('__name__', 'in', chunk)
+                    const limitsSnapshot = await liveDb.collection("dealerLimits")
+                        .where(FieldPath.documentId(), 'in', chunk)
                         .get();
                     limitsSnapshot.forEach(doc => allLimits.push({ id: doc.id, ...doc.data() }));
                 }
@@ -118,7 +111,7 @@ async function processDailyReports(isTest: boolean = false) {
                 };
             });
 
-            // Recipient logic: if test mode, only send to Yash
+            // TEST MODE: Only send one email to Yash
             let recipients = isTest ? ['yash.jain@supermoney.in'] : [user.emailAddress];
             
             if (isANC011 && !isTest) {
@@ -186,12 +179,13 @@ async function processDailyReports(isTest: boolean = false) {
                     });
                 }
 
+                // If test mode, stop after first successful send
                 if (isTest) {
                     return NextResponse.json({ message: "Test MIS report sent to yash.jain@supermoney.in" }, { status: 200 });
                 }
 
-            } catch (err) {
-                console.error(`Email attempt failed:`, err);
+            } catch (err: any) {
+                console.error(`Email failed for ${user.emailAddress}:`, err);
                 if (isTest) throw err;
             }
         }
@@ -201,7 +195,7 @@ async function processDailyReports(isTest: boolean = false) {
     } catch (error: any) {
         console.error("Critical error in reporting route:", error);
         return NextResponse.json({ 
-            error: "Database or Permission Error", 
+            error: "Permission or Scope Error", 
             details: error.message,
             code: error.code 
         }, { status: 500 });
