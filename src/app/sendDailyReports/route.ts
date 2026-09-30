@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { initializeApp, getApps } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import * as admin from 'firebase-admin';
 import * as nodemailer from 'nodemailer';
 import { Parser } from 'json2csv';
 
@@ -41,6 +40,7 @@ async function validateAndProcess(request: Request) {
         : authHeader;
 
     if (inputToken !== expectedToken) {
+        console.warn("MIS Trigger: Unauthorized attempt or token mismatch.");
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -52,15 +52,21 @@ async function validateAndProcess(request: Request) {
 
 async function processDailyReports(isTest: boolean = false) {
     try {
-        // Force initialize with specific project ID to ensure scope discovery for named databases
-        if (getApps().length === 0) {
-            initializeApp({
-                projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'anchorlink-g5wbd'
-            });
-        }
+        const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'anchorlink-g5wbd';
+        
+        // Use a single app instance with explicit project ID
+        const app = admin.apps.length === 0 
+            ? admin.initializeApp({ projectId })
+            : admin.app();
 
-        // Modular Firestore call is required for named databases in v12+
-        const db = getFirestore("live");
+        // Explicitly get the firestore instance for the "live" database
+        // Passing the app instance helps resolve scope issues in serverless environments
+        const db = admin.firestore(app).databaseId === "live" 
+            ? admin.firestore(app) 
+            : admin.firestore(app).databaseId !== "live" ? admin.firestore(app).databaseId === "(default)" ? admin.firestore(app) : admin.firestore(app) : admin.firestore(app);
+            
+        // Correct way to target a named database in v12 barrel import
+        const liveDb = (admin.firestore(app) as any).database ? (admin.firestore(app) as any).database("live") : admin.firestore(app);
 
         const transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST || "smtp-relay.gmail.com",
@@ -72,7 +78,9 @@ async function processDailyReports(isTest: boolean = false) {
             }
         });
 
-        const usersSnapshot = await db.collection("users").where("roleType", "==", "Anchor").get();
+        // Use liveDb for queries
+        const usersSnapshot = await liveDb.collection("users").where("roleType", "==", "Anchor").get();
+        
         if (usersSnapshot.empty) {
             return NextResponse.json({ message: "No active anchor users found." }, { status: 200 });
         }
@@ -83,7 +91,7 @@ async function processDailyReports(isTest: boolean = false) {
             if (!user.emailAddress) continue;
 
             const isANC011 = user.externalId === 'ANC011';
-            const dealersSnapshot = await db.collection("dealers").where("anchorId", "==", user.externalId).get();
+            const dealersSnapshot = await liveDb.collection("dealers").where("anchorId", "==", user.externalId).get();
             
             if (dealersSnapshot.empty && !isTest) continue;
 
@@ -95,8 +103,8 @@ async function processDailyReports(isTest: boolean = false) {
                 const CHUNK_SIZE = 30;
                 for (let i = 0; i < dealerIds.length; i += CHUNK_SIZE) {
                     const chunk = dealerIds.slice(i, i + CHUNK_SIZE);
-                    const limitsSnapshot = await db.collection("dealerLimits")
-                        .where('__name__', 'in', chunk)
+                    const limitsSnapshot = await liveDb.collection("dealerLimits")
+                        .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
                         .get();
                     limitsSnapshot.forEach(doc => allLimits.push({ id: doc.id, ...doc.data() }));
                 }
@@ -187,7 +195,7 @@ async function processDailyReports(isTest: boolean = false) {
                 }
 
             } catch (err: any) {
-                console.error(`Email attempt failed:`, err);
+                console.error(`Email attempt failed for ${user.emailAddress}:`, err);
                 if (isTest) throw err;
             }
         }
@@ -197,9 +205,8 @@ async function processDailyReports(isTest: boolean = false) {
     } catch (error: any) {
         console.error("Critical error in reporting route:", error);
         return NextResponse.json({ 
-            error: "Execution Error", 
+            error: "Database or Permission Error", 
             details: error.message,
-            stack: error.stack,
             code: error.code 
         }, { status: 500 });
     }
