@@ -31,9 +31,9 @@ graph TB
     end
 
     subgraph BgJobs["Background Jobs"]
-        CF["Cloud Function<br/>sendDailyReports<br/>(HTTPS trigger)"]
+        CF["Cloud Functions<br/>sendLimitReports<br/>sendOverdueReports<br/>(HTTPS triggers)<br/>Bearer: MIS_REPORT_API_KEY"]
         Scheduler["Cloud Scheduler<br/>daily cron"]
-        SMTP["SMTP (nodemailer)<br/>daily overdue emails<br/>+ CSV attachments"]
+        MailAPI["Internal mail service<br/>live.supermoney.in<br/>/supermoney-service/email/send<br/>plain-text body + CSV attachment"]
     end
 
     subgraph External["External Consumers"]
@@ -64,7 +64,7 @@ graph TB
     %% Background
     Scheduler --> CF
     CF --> DB1
-    CF --> SMTP
+    CF --> MailAPI
 
     %% External
     DealerAPI --> API

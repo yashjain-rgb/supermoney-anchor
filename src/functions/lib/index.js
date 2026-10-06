@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendDailyReports = void 0;
+exports.sendOverdueReports = exports.sendLimitReports = void 0;
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const json2csv_1 = require("json2csv");
@@ -16,25 +16,38 @@ if (admin.apps.length === 0) {
  */
 const LIVE_DATABASE_ID = "live";
 const liveDb = () => (0, firestore_1.getFirestore)(admin.app(), LIVE_DATABASE_ID);
-/** Test-mode recipient: every report is redirected here. */
+/**
+ * The address every test/dev run is redirected to. Hardcoded deliberately —
+ * these are the only two reports that mail anyone, and neither should be able
+ * to reach a real Anchor until it has been signed off.
+ */
 const TEST_RECIPIENT = "yash.jain@supermoney.in";
 /** Every run is recorded here for auditability. Never gates a send. */
 const RUN_LOG_COLLECTION = "misRunLog";
-/** ANC011's report also goes to their channel-finance mailbox. */
+/** The Anchor whose limit report has a second, channel-finance recipient. */
+const ANC011_EXTERNAL_ID = "ANC011";
+/**
+ * ANC011's limit report also goes to their channel-finance mailbox. This is a
+ * property of THAT ANCHOR, not of the report type — so it stays keyed on
+ * `externalId` and never leaks into test mode, where the mailbox would be an
+ * external party receiving an internal-only run.
+ */
 const ANC011_EXTRA_RECIPIENT = "channelfinance.in@redingtongroup.com";
 /**
- * Dedicated credential for this endpoint, deliberately NOT `DEALER_API_SECRET_KEY`.
+ * Dedicated credential for both endpoints, deliberately NOT `DEALER_API_SECRET_KEY`.
  * That key guards the seven Next.js API routes on the VM and is read from the VM's
- * `.env`; this one is read from Secret Manager by the Cloud Function only. Rotating
- * either must not disturb the other.
+ * `.env`; this one is read from Secret Manager by these functions only. Rotating
+ * either must not disturb the other. Both functions share it by design — one
+ * credential covers the whole MIS surface, so rotating it is a single operation.
  */
 const API_KEY_SECRET = "MIS_REPORT_API_KEY";
+const PORTAL_URL = "https://anchor.supermoney.in/";
 /**
  * Supermoney's internal mail service. Replaces SMTP delivery entirely, which
  * removes three problems at once: a stored mail password, the Gmail app-password
  * policy, and the static-egress-IP work (VPC connector + Cloud NAT) that an
- * IP-allowlisted SMTP relay would have required. Sender identity is the service's
- * concern, not ours — we no longer set a `from`.
+ * IP-allowlisted SMTP relay would have required. Sender identity — including the
+ * signature and logo — is the service's concern, not ours; we set no `from`.
  */
 const EMAIL_API_URL = process.env.EMAIL_API_URL ||
     "https://live.supermoney.in/supermoney-service/email/send";
@@ -71,16 +84,20 @@ const sendEmail = async (mail) => {
         throw new Error("mail service did not confirm delivery");
     }
 };
-// Function to get all active anchor users
-const getActiveAnchorUsers = async (db) => {
-    const usersSnapshot = await db.collection("users").where("roleType", "==", "Anchor").get();
-    if (usersSnapshot.empty) {
-        console.log("No active anchor users found.");
-        return [];
-    }
-    return usersSnapshot.docs.map((doc) => (Object.assign({ id: doc.id }, doc.data())));
+/**
+ * Resolves a single Anchor by `externalId`. Filtered on one field only, so it
+ * needs no composite index; `roleType` is checked in code.
+ */
+const getAnchorByExternalId = async (db, anchorId) => {
+    const snapshot = await db
+        .collection("users")
+        .where("externalId", "==", anchorId)
+        .limit(10)
+        .get();
+    const doc = snapshot.docs.find((d) => d.data().roleType === "Anchor");
+    return doc ? Object.assign({ id: doc.id }, doc.data()) : null;
 };
-// Function to get dealer data with comprehensive limit information
+/** Dealer rows with their limit figures, scoped to one Anchor. */
 const getDealerDataForAnchor = async (db, anchorId) => {
     const dealersSnapshot = await db.collection("dealers").where("anchorId", "==", anchorId).get();
     if (dealersSnapshot.empty) {
@@ -115,72 +132,18 @@ const getDealerDataForAnchor = async (db, anchorId) => {
     });
 };
 /**
- * Plain-text body wrapper.
+ * Plain-text body footer.
  *
  * The mail service does NOT render HTML — it delivers `body` verbatim, so any
  * tags sent here arrive as visible markup (verified against the live endpoint:
  * a body of `<h2>HTML check</h2>` was received by the recipient as exactly that
- * string). Everything below is therefore plain text. The branded logo, heading
- * colours and the button styling are gone as a result: the only way to keep them
- * would be to have the service render HTML, which it does not.
+ * string). The signature and logo are appended by the mail service itself, so
+ * they are deliberately NOT duplicated here.
  */
 const buildEmailBody = (content) => `${content}
 
-This is an automated MIS report. For real-time updates, please login to the portal:
-https://anchor.supermoney.in
-
-Thank you,
-The Supermoney Team`;
-/** The single MIS implementation — the trigger API calls this. Do not fork it. */
-const runMISReport = async (options) => {
-    const db = liveDb();
-    const summary = {
-        mode: options.mode,
-        scope: options.anchorId ? `anchor:${options.anchorId}` : "all-anchors",
-        usersConsidered: 0,
-        emailsSent: 0,
-        emailsSkipped: 0,
-        emailsFailed: 0,
-    };
-    const allUsers = await getActiveAnchorUsers(db);
-    const users = options.anchorId
-        ? allUsers.filter((u) => u.externalId === options.anchorId)
-        : allUsers;
-    summary.usersConsidered = users.length;
-    if (users.length === 0) {
-        summary.note = options.anchorId ? "anchor-not-found" : "no-anchor-users";
-        await recordRun(db, summary);
-        return summary;
-    }
-    for (const user of users) {
-        // In test mode, deliver the first eligible anchor's report to the test address only.
-        const recipient = options.testRecipient ? options.testRecipient : user.emailAddress;
-        if (!recipient) {
-            summary.emailsSkipped += 1;
-            continue;
-        }
-        try {
-            const outcome = await sendReportForAnchor(db, user, recipient, Boolean(options.testRecipient));
-            if (outcome === "sent") {
-                summary.emailsSent += 1;
-            }
-            else {
-                summary.emailsSkipped += 1;
-            }
-        }
-        catch (emailError) {
-            summary.emailsFailed += 1;
-            // Log the address the mail actually went to. In test mode that is the test
-            // recipient, never the anchor — logging `user.emailAddress` here reads as
-            // "we mailed this anchor" and misdirects debugging.
-            console.error(`Failed to send report for ${user.externalId} to ${recipient}:`, emailError);
-        }
-        if (options.testRecipient)
-            break;
-    }
-    await recordRun(db, summary);
-    return summary;
-};
+This is an automated MIS report. For real-time updates, please log in to the portal:
+${PORTAL_URL}`;
 /** Best-effort audit record. A logging failure must never fail the run. */
 const recordRun = async (db, summary) => {
     try {
@@ -191,25 +154,80 @@ const recordRun = async (db, summary) => {
     }
 };
 /**
- * Builds and sends one anchor's report. ANC011 gets the full limit-utilization
- * view; every other anchor gets the overdue summary. Returns "skipped" when the
- * anchor has nothing to report.
+ * Shared bearer gate. Each function calls this itself before doing any work, so
+ * both verify auth independently (R3) and neither depends on the other having
+ * run. It writes its own failure response, so a caller cannot forget to.
  *
- * `isTest` suppresses every recipient except the one passed in — see below.
+ * Returns true when the request may proceed.
  */
-const sendReportForAnchor = async (db, user, recipient, isTest = false) => {
-    const isANC011 = user.externalId === 'ANC011';
-    const dealers = await getDealerDataForAnchor(db, user.externalId);
-    // The mail service accepts one `emailId` per request, so deliver per address.
-    // ANC011's extra mailbox belongs to an EXTERNAL party (channel finance), so a
-    // test run must never reach it: with `isTest` the report goes to the test
-    // address and nowhere else. Real runs mail both, as before.
-    const recipients = isANC011 && !isTest ? [recipient, ANC011_EXTRA_RECIPIENT] : [recipient];
-    // Count only — addresses are PII and must not be logged. This is what makes
-    // test mode checkable: it stays at 1 even for ANC011, instead of 2.
-    console.log(`[mis] ${user.externalId}: sending to ${recipients.length} recipient(s)`);
-    const reportDate = new Date().toISOString().split('T')[0];
-    if (isANC011) {
+const authorized = (req, res) => {
+    const expected = process.env[API_KEY_SECRET];
+    if (!expected) {
+        console.error(`[mis] ${API_KEY_SECRET} is not configured for this function`);
+        res.status(503).send("Server not configured.");
+        return false;
+    }
+    const header = req.headers.authorization;
+    const token = (header === null || header === void 0 ? void 0 : header.startsWith("Bearer ")) ? header.slice(7) : header;
+    if (token !== expected) {
+        res.status(401).send("Unauthorized");
+        return false;
+    }
+    return true;
+};
+/**
+ * `anchorId` is required on both endpoints: it is what makes them generic, and
+ * requiring it means a missing parameter can never fan out into a mail run
+ * across every Anchor.
+ */
+const readAnchorId = (req) => typeof req.query.anchorId === "string" ? req.query.anchorId.trim() : "";
+const anchorIdRequired = (res, hint) => {
+    res.status(400).json({ error: "anchorId is required.", hint });
+};
+/**
+ * Limit-utilization report for ONE Anchor, scoped by `anchorId`.
+ *
+ * Generic by design: any Anchor can be asked for, and the caller names it.
+ * `?test=true` redirects delivery to TEST_RECIPIENT and suppresses every other
+ * recipient, including ANC011's external channel-finance mailbox.
+ */
+const runLimitReport = async (anchorId, isTest) => {
+    const db = liveDb();
+    const summary = {
+        report: "limit",
+        mode: isTest ? "test" : "live",
+        scope: `anchor:${anchorId}`,
+        usersConsidered: 0,
+        emailsSent: 0,
+        emailsSkipped: 0,
+        emailsFailed: 0,
+    };
+    const anchor = await getAnchorByExternalId(db, anchorId);
+    if (!anchor) {
+        summary.note = "anchor-not-found";
+        await recordRun(db, summary);
+        return summary;
+    }
+    summary.usersConsidered = 1;
+    // Test mode replaces every recipient: the Anchor is not mailed, and neither is
+    // the external channel-finance mailbox.
+    const candidates = isTest
+        ? [TEST_RECIPIENT]
+        : anchor.externalId === ANC011_EXTERNAL_ID
+            ? [anchor.emailAddress, ANC011_EXTRA_RECIPIENT]
+            : [anchor.emailAddress];
+    const recipients = candidates.filter((to) => Boolean(to));
+    if (recipients.length === 0) {
+        summary.emailsSkipped = 1;
+        summary.note = "anchor-has-no-email";
+        await recordRun(db, summary);
+        return summary;
+    }
+    // Count only — addresses are PII. This is what makes test mode checkable: it
+    // reads 1 even for ANC011, instead of 2.
+    console.log(`[mis] limit ${anchor.externalId}: sending to ${recipients.length} recipient(s)`);
+    try {
+        const dealers = await getDealerDataForAnchor(db, anchor.externalId);
         const csvFields = [
             { label: 'Dealer Name', value: 'dealerName' },
             { label: 'Sanctioned Limit', value: 'sanctionedLimit' },
@@ -218,120 +236,181 @@ const sendReportForAnchor = async (db, user, recipient, isTest = false) => {
             { label: 'Overdue Amount', value: 'overdueAmount' },
             { label: 'Status', value: 'status' }
         ];
-        const json2csvParser = new json2csv_1.Parser({ fields: csvFields });
-        const csv = json2csvParser.parse(dealers);
-        const content = `Daily Limit Utilization Summary
+        const csv = new json2csv_1.Parser({ fields: csvFields }).parse(dealers);
+        const content = `Dear Team,
 
-Dear Team,
+Please find below the Daily Limit Utilization Summary for ${anchor.userName}.
 
-Please find below the Daily Limit Utilization Summary for ${user.userName}.
+📊 Daily Limit Utilisation
 
-DAILY LIMIT UTILIZATION
-The attached CSV contains the Dealer Tab View for all dealers mapped to your account, providing a consolidated view of current limit utilization.`;
+The attached CSV contains the Dealer Tab View for all dealers mapped to this Anchor, providing a consolidated view of their current limit utilisation.
+
+The report includes:
+  • Dealer-wise sanctioned limit
+  • Utilised limit
+  • Available limit
+  • Overdue amount`;
         const body = buildEmailBody(content);
+        const reportDate = new Date().toISOString().split('T')[0];
         for (const to of recipients) {
             await sendEmail({
                 to,
                 subject: "Supermoney Daily Limit Utilization Summary",
                 body,
                 attachment: {
-                    filename: `Limit_Utilization_Report_${reportDate}.csv`,
+                    filename: `Limit_Utilization_${anchor.externalId}_${reportDate}.csv`,
                     content: csv,
                     contentType: "text/csv",
                 },
             });
         }
-        return "sent";
+        summary.emailsSent = 1;
     }
-    // Standard Overdue Report for other Anchors
-    const overdueDealers = dealers.filter((d) => d.overdueAmount > 0);
-    if (overdueDealers.length === 0) {
-        return "skipped";
+    catch (error) {
+        summary.emailsFailed = 1;
+        console.error(`[mis] limit send failed for ${anchor.externalId}:`, error);
     }
-    const totalOverdueAmount = overdueDealers.reduce((sum, d) => sum + d.overdueAmount, 0);
-    const formattedAmount = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(totalOverdueAmount);
-    const csvFields = ["dealerName", "overdueAmount", "status"];
-    const json2csvParser = new json2csv_1.Parser({ fields: csvFields });
-    const csv = json2csvParser.parse(overdueDealers);
-    const content = `Daily Overdue Summary
+    await recordRun(db, summary);
+    return summary;
+};
+/**
+ * Overdue report for ONE Anchor.
+ *
+ * DEV ONLY — the overdue report is still being specified, so delivery is pinned
+ * to TEST_RECIPIENT unconditionally and No Anchor can receive it yet. When the
+ * report is signed off, replace the pinned recipient with the Anchor's own and
+ * decide whether ANC011 (which today never receives an overdue summary) joins in.
+ */
+const runOverdueReport = async (anchorId) => {
+    const db = liveDb();
+    const summary = {
+        report: "overdue",
+        mode: "dev",
+        scope: `anchor:${anchorId}`,
+        usersConsidered: 0,
+        emailsSent: 0,
+        emailsSkipped: 0,
+        emailsFailed: 0,
+    };
+    const anchor = await getAnchorByExternalId(db, anchorId);
+    if (!anchor) {
+        summary.note = "anchor-not-found";
+        await recordRun(db, summary);
+        return summary;
+    }
+    summary.usersConsidered = 1;
+    try {
+        const dealers = await getDealerDataForAnchor(db, anchor.externalId);
+        const overdueDealers = dealers.filter((d) => d.overdueAmount > 0);
+        if (overdueDealers.length === 0) {
+            summary.emailsSkipped = 1;
+            summary.note = "no-overdue-dealers";
+            await recordRun(db, summary);
+            return summary;
+        }
+        const totalOverdueAmount = overdueDealers.reduce((sum, d) => sum + d.overdueAmount, 0);
+        const formattedAmount = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(totalOverdueAmount);
+        const csv = new json2csv_1.Parser({ fields: ["dealerName", "overdueAmount", "status"] }).parse(overdueDealers);
+        const content = `Hello ${anchor.userName},
 
-Hello ${user.userName},
+Here is the overdue summary for dealers mapped to your Anchor on the Supermoney Anchor Platform.
 
-Here is your daily summary of outstanding payments from the Supermoney Anchor Platform.
+📊 Overdue Summary
 
-OVERDUE SUMMARY
 Total overdue amount: ${formattedAmount}
 Number of dealers with overdue payments: ${overdueDealers.length}`;
-    const body = buildEmailBody(content);
-    for (const to of recipients) {
+        const reportDate = new Date().toISOString().split('T')[0];
         await sendEmail({
-            to,
+            to: TEST_RECIPIENT,
             subject: "Supermoney Daily Overdue Report",
-            body,
+            body: buildEmailBody(content),
             attachment: {
-                filename: `Daily_Overdue_Report_${reportDate}.csv`,
+                filename: `Daily_Overdue_${anchor.externalId}_${reportDate}.csv`,
                 content: csv,
                 contentType: "text/csv",
             },
         });
-    }
-    return "sent";
-};
-/**
- * Trigger API — call this whenever anchor data changes.
- *
- *   POST /sendDailyReports                       → all anchors
- *   POST /sendDailyReports?anchorId=ANC001       → only that anchor
- *   POST /sendDailyReports?test=true             → one report to TEST_RECIPIENT
- *   POST /sendDailyReports?test=true&anchorId=X  → that anchor's report, to TEST_RECIPIENT
- *
- * There is deliberately no schedule and no once-per-day guard: it sends exactly
- * when called, so the caller owns the frequency. To run it daily, point Cloud
- * Scheduler at this URL with an `Authorization: Bearer <key>` header rather than
- * adding a second sender here — two triggers would double-send.
- *
- * Requires `Authorization: Bearer <MIS_REPORT_API_KEY>`, held in Secret Manager.
- */
-exports.sendDailyReports = functions
-    // asia-south1 (Mumbai) — R18. Without this the function defaults to
-    // us-central1, which puts compute outside India and reads the Mumbai
-    // Firestore cross-region. Deploying a new region does NOT move the old
-    // function: a us-central1 `sendDailyReports` would remain and must be
-    // deleted separately.
-    .region('asia-south1')
-    .runWith({
-    timeoutSeconds: 540,
-    memory: "512MB",
-    // SMTP_USER / SMTP_PASS are gone: delivery no longer uses SMTP, so the
-    // function holds no mail credential at all.
-    secrets: [API_KEY_SECRET],
-})
-    .https.onRequest(async (req, res) => {
-    const expected = process.env[API_KEY_SECRET];
-    if (!expected) {
-        console.error(`[mis] ${API_KEY_SECRET} is not configured for this function`);
-        res.status(503).send("Server not configured.");
-        return;
-    }
-    const header = req.headers.authorization;
-    const token = (header === null || header === void 0 ? void 0 : header.startsWith("Bearer ")) ? header.slice(7) : header;
-    if (token !== expected) {
-        res.status(401).send("Unauthorized");
-        return;
-    }
-    const isTest = req.query.test === "true";
-    const anchorId = typeof req.query.anchorId === "string" ? req.query.anchorId : undefined;
-    try {
-        const summary = await runMISReport({
-            mode: isTest ? "test" : "api",
-            anchorId,
-            testRecipient: isTest ? TEST_RECIPIENT : undefined,
-        });
-        console.log("[mis] api run complete", JSON.stringify(summary));
-        res.status(200).json(summary);
+        summary.emailsSent = 1;
+        console.log(`[mis] overdue ${anchor.externalId}: sent (dev mode, pinned recipient)`);
     }
     catch (error) {
-        console.error("[mis] api run failed", error);
+        summary.emailsFailed = 1;
+        console.error(`[mis] overdue send failed for ${anchor.externalId}:`, error);
+    }
+    await recordRun(db, summary);
+    return summary;
+};
+/**
+ * Both triggers share one runtime profile and one secret binding.
+ *
+ * `region('asia-south1')` is applied per-function below and is NOT optional:
+ * without it a function silently defaults to us-central1, putting compute
+ * outside India and reading the Mumbai Firestore cross-region (R18). Deploying
+ * a new region does NOT move an existing function — a us-central1 copy would
+ * remain under the same name and must be deleted separately.
+ */
+const RUNTIME = {
+    timeoutSeconds: 540,
+    memory: "512MB",
+    secrets: [API_KEY_SECRET],
+};
+/**
+ * Limit-utilization report — generic, one Anchor per call.
+ *
+ *   POST /sendLimitReports?anchorId=ANC011              → ANC011's real recipient
+ *   POST /sendLimitReports?anchorId=ANC001&test=true    → ANC001's report, to TEST_RECIPIENT
+ *
+ * There is deliberately no "all Anchors" mode: `anchorId` is required, so this
+ * endpoint cannot fan out. Requires `Authorization: Bearer <MIS_REPORT_API_KEY>`.
+ */
+exports.sendLimitReports = functions
+    .region('asia-south1')
+    .runWith(RUNTIME)
+    .https.onRequest(async (req, res) => {
+    if (!authorized(req, res)) {
+        return;
+    }
+    const anchorId = readAnchorId(req);
+    if (!anchorId) {
+        anchorIdRequired(res, "POST /sendLimitReports?anchorId=ANC011[&test=true]");
+        return;
+    }
+    try {
+        const summary = await runLimitReport(anchorId, req.query.test === "true");
+        console.log("[mis] limit run complete", JSON.stringify(summary));
+        res.status(summary.note === "anchor-not-found" ? 404 : 200).json(summary);
+    }
+    catch (error) {
+        console.error("[mis] limit run failed", error);
+        res.status(500).json({ error: "Report run failed. Check function logs." });
+    }
+});
+/**
+ * Overdue report — DEV ONLY, delivery pinned to TEST_RECIPIENT.
+ *
+ *   POST /sendOverdueReports?anchorId=ANC001
+ *
+ * No Anchor receives this report yet. Requires the same bearer credential.
+ */
+exports.sendOverdueReports = functions
+    .region('asia-south1')
+    .runWith(RUNTIME)
+    .https.onRequest(async (req, res) => {
+    if (!authorized(req, res)) {
+        return;
+    }
+    const anchorId = readAnchorId(req);
+    if (!anchorId) {
+        anchorIdRequired(res, "POST /sendOverdueReports?anchorId=ANC001");
+        return;
+    }
+    try {
+        const summary = await runOverdueReport(anchorId);
+        console.log("[mis] overdue run complete", JSON.stringify(summary));
+        res.status(summary.note === "anchor-not-found" ? 404 : 200).json(summary);
+    }
+    catch (error) {
+        console.error("[mis] overdue run failed", error);
         res.status(500).json({ error: "Report run failed. Check function logs." });
     }
 });
