@@ -30,6 +30,16 @@ npm run deploy       # Deploy Cloud Functions (firebase deploy --only functions)
 - `apphosting.yaml` exists in the repo but **App Hosting is not the live target** — its Secret Manager entries do not apply to the VM, which reads env vars from its own `.env`
 - `firebase.json` deploys **only** Cloud Functions (`npm run deploy`)
 
+### GCP region policy (R18)
+
+Everything runs in **`asia-south1` (Mumbai)**. Never deploy to a US region.
+
+- Firestore `live` is in `asia-south1` — keep compute beside it
+- Cloud Functions must declare `.region('asia-south1')`. **Omitting `.region()` silently defaults to `us-central1`** — there is no project-level default that saves you
+- Cloud Scheduler jobs live in `asia-south1` (`daily-mis-report-anchor`, `daily-email-reports`); an older `daily-mis-report` sits in `us-central1` and should be removed
+- Changing a function's region deploys a **second** function under the same name — the old-region one is not moved and must be deleted explicitly:
+  `gcloud functions delete <name> --region=us-central1 --project=anchorlink-g5wbd`
+
 ### Admin SDK credentials on the VM
 
 Anything using the **Firebase Admin SDK** on the VM needs an explicit, properly-scoped credential. `initializeApp()` with no arguments falls back to host ADC, and the VM's metadata token lacks the Datastore scope. Symptom:
@@ -100,7 +110,7 @@ Configured in `src/ai/genkit.ts` — uses **Gemini 2.5 Flash** via `@genkit-ai/g
 
 `src/functions/index.ts` exports one — the on-demand MIS trigger:
 
-- **`sendDailyReports`** (HTTPS trigger, `us-central1`, 1st gen, 540s / 512MB) — per-Anchor emails with CSV attachments, recipients resolved from the live DB `users` where `roleType == "Anchor"`. Runs in the Cloud Functions runtime, where `admin.initializeApp()` is implicitly credentialed. Reads the named `live` database via the modular `getFirestore(app, "live")`; the namespaced `admin.firestore(x)` form takes an App, not a database id, so it cannot select a named database.
+- **`sendDailyReports`** (HTTPS trigger, `asia-south1`, 1st gen, 540s / 512MB) — per-Anchor emails with CSV attachments, recipients resolved from the live DB `users` where `roleType == "Anchor"`. Runs in the Cloud Functions runtime, where `admin.initializeApp()` is implicitly credentialed. Reads the named `live` database via the modular `getFirestore(app, "live")`; the namespaced `admin.firestore(x)` form takes an App, not a database id, so it cannot select a named database.
   - Auth: `Authorization: Bearer <MIS_REPORT_API_KEY>` (Secret Manager — **not** `DEALER_API_SECRET_KEY`)
   - `?anchorId=ANC011` — scope the run to one anchor; omit for all anchors
   - `?test=true` — one report to the test recipient instead of real recipients

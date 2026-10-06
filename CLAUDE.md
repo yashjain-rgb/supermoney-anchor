@@ -84,6 +84,10 @@ Non-Negotiables:
   R15: Dependency hygiene — consult package.json before adding packages; prefer existing utilities
   R16: git pull origin <active-branch> BEFORE any code change; never work on stale code
   R17: Graceful degradation — AI/external service failures never block the core UI
+  R18: All GCP resources live in asia-south1 (Mumbai) — never a US region.
+       Applies to Cloud Functions, Cloud Scheduler, Storage, and every new
+       service. Data residency: DPDP Act 2023 / cert-in. Firestore `live` is
+       already asia-south1 — keep compute next to it.
 
 Component Decision:
   Default: Server Component

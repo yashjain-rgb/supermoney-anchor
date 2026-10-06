@@ -319,6 +319,12 @@ const sendReportForAnchor = async (
  * Requires `Authorization: Bearer <MIS_REPORT_API_KEY>`, held in Secret Manager.
  */
 export const sendDailyReports = functions
+  // asia-south1 (Mumbai) — R18. Without this the function defaults to
+  // us-central1, which puts compute outside India and reads the Mumbai
+  // Firestore cross-region. Deploying a new region does NOT move the old
+  // function: a us-central1 `sendDailyReports` would remain and must be
+  // deleted separately.
+  .region('asia-south1')
   .runWith({
     timeoutSeconds: 540,
     memory: "512MB",
