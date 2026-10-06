@@ -21,6 +21,25 @@ npm run genkit:dev   # Genkit dev UI + AI flows
 npm run deploy       # Deploy Cloud Functions (firebase deploy --only functions)
 ```
 
+## Deployment
+
+`live` runs on a **self-hosted VM** — this is permanent, not a migration state.
+
+- Next.js server runs under **PM2** (process `anchor-dashboard-live`) behind **nginx**
+- Deployed by `.github/workflows/production.yml` (self-hosted runner): rsyncs GitHub `live` → GitLab (`gitlab.mintwalk.com`), force-pushing to that repo
+- `apphosting.yaml` exists in the repo but **App Hosting is not the live target** — its Secret Manager entries do not apply to the VM, which reads env vars from its own `.env`
+- `firebase.json` deploys **only** Cloud Functions (`npm run deploy`)
+
+### Admin SDK credentials on the VM
+
+Anything using the **Firebase Admin SDK** on the VM needs an explicit, properly-scoped credential. `initializeApp()` with no arguments falls back to host ADC, and the VM's metadata token lacks the Datastore scope. Symptom:
+
+```
+7 PERMISSION_DENIED: Request had insufficient authentication scopes
+```
+
+Only one Next.js file uses the Admin SDK — `src/app/sendDailyReports/route.ts`. The entire data layer (`src/lib/data.ts`) uses the **client SDK** (`src/lib/firebase.ts`, `NEXT_PUBLIC_FIREBASE_*` API key) and is unaffected by this constraint. **Do not copy Cloud Function code into the Next.js runtime**: `admin.initializeApp()` is implicitly credentialed inside Cloud Functions but not in a self-hosted Node process.
+
 ## Two-Firestore Architecture
 
 The app connects to **two separate Firebase projects**, initialized in `src/lib/firebase.ts`:
@@ -79,7 +98,27 @@ Configured in `src/ai/genkit.ts` — uses **Gemini 2.5 Flash** via `@genkit-ai/g
 
 ## Cloud Functions
 
-`src/functions/index.ts` — `sendDailyReports` (HTTPS trigger): sends daily overdue summary emails to all Anchor users with CSV attachments. Configured with SMTP secrets. Runs via Cloud Scheduler. **⚠️ The HTTPS trigger has no authentication — invoke a fix when the area is touched (A.9.1).**
+`src/functions/index.ts` exports one — the on-demand MIS trigger:
+
+- **`sendDailyReports`** (HTTPS trigger, `us-central1`, 1st gen, 540s / 512MB) — per-Anchor emails with CSV attachments, recipients resolved from the live DB `users` where `roleType == "Anchor"`. Runs in the Cloud Functions runtime, where `admin.initializeApp()` is implicitly credentialed. Reads the named `live` database via the modular `getFirestore(app, "live")`; the namespaced `admin.firestore(x)` form takes an App, not a database id, so it cannot select a named database.
+  - Auth: `Authorization: Bearer <MIS_REPORT_API_KEY>` (Secret Manager — **not** `DEALER_API_SECRET_KEY`)
+  - `?anchorId=ANC011` — scope the run to one anchor; omit for all anchors
+  - `?test=true` — one report to the test recipient instead of real recipients
+  - No schedule and no once-per-day guard: it sends exactly when called, so the caller owns the frequency
+
+There is deliberately **no scheduled export**. To run it daily, point Cloud Scheduler at the function URL with a bearer header — adding an in-function schedule alongside a scheduler hitting the same URL would double-send.
+
+## Daily MIS Report — who gets emailed
+
+Recipients are data-driven, not hardcoded. Source: `live` DB, `users` where `roleType == "Anchor"`, skipping empty `emailAddress`.
+
+| Case | Recipients |
+|---|---|
+| `externalId === 'ANC011'` | the user's `emailAddress` + `channelfinance.in@redingtongroup.com` |
+| All other Anchors | the user's `emailAddress` only, and only if they have ≥1 dealer with `overdueAmount > 0` |
+| `?test=true` | a single test address, first Anchor user only, then returns |
+
+Each Anchor receives only their own dealers, scoped by `anchorId === user.externalId`. Two implementations still exist and have drifted: the Cloud Function `sendDailyReports` (the working one, bearer-authenticated), and the portal route `src/app/sendDailyReports/route.ts` (triggered by `src/app/api/run-mis-task/route.ts`, Admin session required — **still broken**, since it uses the Admin SDK in the Next.js runtime where `initializeApp()` falls back to host ADC and lacks the Datastore scope). The route duplicates the function's logic — it inlines `getDealerDataForAnchor` rather than sharing it. `api/run-mis-task` POSTs to `${NEXT_PUBLIC_BASE_URL}/sendDailyReports`, i.e. the route, **not** the Cloud Function.
 
 ## UI
 

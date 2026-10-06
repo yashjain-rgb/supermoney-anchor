@@ -20,7 +20,7 @@ This project is being hardened for **cert-in / ISO 27001:2022 / VAPT** readiness
 | **A.8.20** Network security | Origin/referer validation, no open proxies | ⚠️ No middleware; Server Actions rely on built-in origin check |
 | **A.8.24** Cryptography | Secrets in env only, httpOnly session cookies, TLS | ✅ iron-session httpOnly cookies; secrets server-side |
 | **A.8.25** Secure development lifecycle | No `ignoreBuildErrors`, dependency scanning (SCA), SAST | ❌ `ignoreBuildErrors: true` set in `next.config.ts` |
-| **A.9.1 / A.9.2** Access control | Server-side auth + RBAC on every Server Action, Route Handler, Cloud Function | ⚠️ Session auth exists; Cloud Function trigger unauthenticated |
+| **A.9.1 / A.9.2** Access control | Server-side auth + RBAC on every Server Action, Route Handler, Cloud Function | ✅ Session auth on Server Actions / Route Handlers; `sendDailyReports` bearer-authenticated via `MIS_REPORT_API_KEY` |
 | **A.9.4** Secret management | Zero secrets on client; env vars only | ✅ `NEXT_PUBLIC_*` only for Firebase config |
 | **A.10.1** Cryptography | TLS in transit, strong password policy, secret rotation | ⚠️ Verify HSTS; rotate `SECRET_COOKIE_PASSWORD` / `DEALER_API_SECRET_KEY` |
 | **A.12.1** Input validation | Zod on every server boundary | ⚠️ Validate in all Server Actions + Route Handlers |
@@ -52,7 +52,9 @@ The following were confirmed in the codebase (see `SECURITY_REMEDIATION_PLAN.md`
 | No middleware / route-level auth guard | repo-wide | Server Actions are the only protected surface; API routes rely on per-route checks |
 | Base64 file blobs stored in Firestore (`invoiceConsents`) | consent flow | Exceeds Firestore 1 MiB document cap; migrate to Firebase Storage |
 | nginx 1 MB body limit vs `bodySizeLimit: '50mb'` | `next.config.ts` + nginx | 50 MB server-action body is a DoS vector; client-side size validation added — keep it |
-| `sendDailyReports` Cloud Function HTTPS trigger unauthenticated | `src/functions/index.ts` | Anyone can invoke the HTTP trigger |
+| `sendDailyReports` Cloud Function is publicly invokable at the IAM layer | `src/functions/index.ts` | `allUsers` holds `roles/cloudfunctions.invoker`, so anyone can reach the URL and only the in-code bearer check gates it. No rate limit (A.12.6 deferred) — a publicly reachable endpoint that sends email should be rate-limited before wide exposure |
+| `DEALER_API_SECRET_KEY` shared across all seven VM API routes | `api/update-dealer-limit`, `api/upsert-invoice`, `api/get-dealer-id`, `api/upcoming-payments`, `api/partial-update-dealer-limit`, `api/run-mis-task`, `sendDailyReports` (route) | One shared bearer secret guards every external route on the VM, so any exposure requires rotating all of them. The Cloud Function no longer shares it — it uses its own `MIS_REPORT_API_KEY` (A.9.4 / A.10.1) |
+| Manual MIS route returns raw `error.message` + `error.code` | `src/app/sendDailyReports/route.ts:197` | Leaks gRPC codes and internals to the caller (A.12.2) |
 | No structured audit log / no dependency scanning | repo-wide | A.8.15, A.8.25 findings |
 
 ### Authentication & Authorization
