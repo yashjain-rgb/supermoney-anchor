@@ -26,16 +26,20 @@ const TEST_RECIPIENT = "yash.jain@supermoney.in";
 /** Every run is recorded here for auditability. Never gates a send. */
 const RUN_LOG_COLLECTION = "misRunLog";
 
-/** The Anchor whose limit report has a second, channel-finance recipient. */
+/** The Anchor whose limit report has an extra group recipient. */
 const ANC011_EXTERNAL_ID = "ANC011";
 
 /**
- * ANC011's limit report also goes to their channel-finance mailbox. This is a
- * property of THAT ANCHOR, not of the report type — so it stays keyed on
- * `externalId` and never leaks into test mode, where the mailbox would be an
- * external party receiving an internal-only run.
+ * ANC011's limit report also goes to Reddington's channel-financing group.
+ *
+ * This is a property of THAT ANCHOR, not of the report type — so it stays keyed
+ * on `externalId`, and test mode suppresses it entirely like every other
+ * recipient.
+ *
+ * It is a `supermoney.in` group, not the external `redingtongroup.com` mailbox
+ * it replaced: mail about ANC011 now stays inside the organisation.
  */
-const ANC011_EXTRA_RECIPIENT = "channelfinance.in@redingtongroup.com";
+const ANC011_EXTRA_RECIPIENT = "reddingtonchannelfinancing@supermoney.in";
 
 /**
  * Dedicated credential for both endpoints, deliberately NOT `DEALER_API_SECRET_KEY`.

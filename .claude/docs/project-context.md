@@ -114,7 +114,7 @@ Configured in `src/ai/genkit.ts` — uses **Gemini 2.5 Flash** via `@genkit-ai/g
 
 `src/functions/index.ts` exports **two** — both HTTPS triggers, both `asia-south1`, both 1st gen, 540s / 512MB:
 
-- **`sendLimitReports`** — limit-utilization report for ONE Anchor, named by `?anchorId=`. Generic by design: any Anchor can be requested. ANC011's report additionally goes to `channelfinance.in@redingtongroup.com`.
+- **`sendLimitReports`** — limit-utilization report for ONE Anchor, named by `?anchorId=`. Generic by design: any Anchor can be requested. ANC011's report additionally goes to `reddingtonchannelfinancing@supermoney.in`.
 - **`sendOverdueReports`** — **DEV ONLY**. Delivery is pinned to the hardcoded test recipient and no Anchor receives it yet; the report is still being specified. `?anchorId=` scopes which Anchor's data is summarised.
 
 Both share:
@@ -142,7 +142,7 @@ Recipients resolve from the `live` DB, `users` where `roleType == "Anchor"`, mat
 
 | Endpoint | Recipients |
 |---|---|
-| `sendLimitReports?anchorId=X` | X's `emailAddress`; **plus** `channelfinance.in@redingtongroup.com` when X is ANC011 |
+| `sendLimitReports?anchorId=X` | X's `emailAddress`; **plus** `reddingtonchannelfinancing@supermoney.in` when X is ANC011 |
 | `sendLimitReports?anchorId=X&test=true` | the test recipient only |
 | `sendOverdueReports?anchorId=X` | the test recipient only — pinned while the report is under development |
 
