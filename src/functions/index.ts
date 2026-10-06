@@ -224,7 +224,12 @@ const runMISReport = async (options: RunOptions): Promise<RunSummary> => {
     }
 
     try {
-      const outcome = await sendReportForAnchor(db, user, recipient);
+      const outcome = await sendReportForAnchor(
+        db,
+        user,
+        recipient,
+        Boolean(options.testRecipient)
+      );
       if (outcome === "sent") {
         summary.emailsSent += 1;
       } else {
@@ -261,17 +266,26 @@ const recordRun = async (db: Firestore, summary: RunSummary): Promise<void> => {
  * Builds and sends one anchor's report. ANC011 gets the full limit-utilization
  * view; every other anchor gets the overdue summary. Returns "skipped" when the
  * anchor has nothing to report.
+ *
+ * `isTest` suppresses every recipient except the one passed in — see below.
  */
 const sendReportForAnchor = async (
   db: Firestore,
   user: any,
-  recipient: string
+  recipient: string,
+  isTest = false
 ): Promise<SendOutcome> => {
   const isANC011 = user.externalId === 'ANC011';
   const dealers = await getDealerDataForAnchor(db, user.externalId);
 
   // The mail service accepts one `emailId` per request, so deliver per address.
-  const recipients = isANC011 ? [recipient, ANC011_EXTRA_RECIPIENT] : [recipient];
+  // ANC011's extra mailbox belongs to an EXTERNAL party (channel finance), so a
+  // test run must never reach it: with `isTest` the report goes to the test
+  // address and nowhere else. Real runs mail both, as before.
+  const recipients = isANC011 && !isTest ? [recipient, ANC011_EXTRA_RECIPIENT] : [recipient];
+  // Count only — addresses are PII and must not be logged. This is what makes
+  // test mode checkable: it stays at 1 even for ANC011, instead of 2.
+  console.log(`[mis] ${user.externalId}: sending to ${recipients.length} recipient(s)`);
   const reportDate = new Date().toISOString().split('T')[0];
 
   if (isANC011) {
