@@ -1,7 +1,6 @@
 
 import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
-import * as nodemailer from "nodemailer";
 import { Parser } from "json2csv";
 import { getFirestore, FieldPath, type Firestore } from "firebase-admin/firestore";
 
@@ -24,18 +23,8 @@ const TEST_RECIPIENT = "yash.jain@supermoney.in";
 /** Every run is recorded here for auditability. Never gates a send. */
 const RUN_LOG_COLLECTION = "misRunLog";
 
-/**
- * SMTP credentials live in Secret Manager, not in the function's env. They must
- * be named in `runWith({ secrets })` or nodemailer starts with `user: undefined`
- * and every send fails auth. Both functions declare them.
- *
- * Only USER and PASS are listed: those carry an explicit
- * `secretmanager.secretAccessor` binding for the runtime SA. SMTP_HOST/SMTP_PORT
- * exist as secrets too but have no binding, and `roles/editor` does not include
- * `secretmanager.versions.access` — naming them here would fail at runtime.
- * Host/port are plain config, so they live as defaults in `buildTransporter`.
- */
-const SMTP_SECRETS = ["SMTP_USER", "SMTP_PASS"];
+/** ANC011's report also goes to their channel-finance mailbox. */
+const ANC011_EXTRA_RECIPIENT = "channelfinance.in@redingtongroup.com";
 
 /**
  * Dedicated credential for this endpoint, deliberately NOT `DEALER_API_SECRET_KEY`.
@@ -45,18 +34,73 @@ const SMTP_SECRETS = ["SMTP_USER", "SMTP_PASS"];
  */
 const API_KEY_SECRET = "MIS_REPORT_API_KEY";
 
-const buildTransporter = (): nodemailer.Transporter =>
-  nodemailer.createTransport({
-    // Defaults must match the value the app uses (smtp.gmail.com, NOT
-    // smtp-relay.gmail.com — the relay needs IP allowlisting and will reject).
-    host: process.env.SMTP_HOST || "smtp.gmail.com",
-    port: Number(process.env.SMTP_PORT) || 587,
-    secure: Number(process.env.SMTP_PORT) === 465,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
+/**
+ * Supermoney's internal mail service. Replaces SMTP delivery entirely, which
+ * removes three problems at once: a stored mail password, the Gmail app-password
+ * policy, and the static-egress-IP work (VPC connector + Cloud NAT) that an
+ * IP-allowlisted SMTP relay would have required. Sender identity is the service's
+ * concern, not ours — we no longer set a `from`.
+ */
+const EMAIL_API_URL =
+  process.env.EMAIL_API_URL ||
+  "https://live.supermoney.in/supermoney-service/email/send";
+
+/** Bounds a single send so one hung request cannot consume the 540s budget. */
+const EMAIL_TIMEOUT_MS = 30_000;
+
+interface MailAttachment {
+  filename: string;
+  content: string;
+  contentType: string;
+}
+
+interface MailRequest {
+  to: string;
+  subject: string;
+  body: string;
+  attachment: MailAttachment;
+}
+
+/**
+ * Sends one mail through the internal service.
+ *
+ * Contract notes, all verified against the live endpoint — the API is strict
+ * about them and returns a bare 400 "Invalid Request" otherwise:
+ *   - `multipart/form-data` only; a urlencoded body is rejected with 415.
+ *   - `imageUrls` is MANDATORY ("ImageUrl list must not be empty"), so every
+ *     send must carry its CSV. There is no attachment-less path.
+ *   - `emailId` is singular, so one call delivers to exactly one recipient.
+ *   - Success is HTTP 200 with `{"successFlag":true}`; a 200 is not sufficient
+ *     on its own, so both are checked.
+ */
+const sendEmail = async (mail: MailRequest): Promise<void> => {
+  const form = new FormData();
+  form.append("subject", mail.subject);
+  form.append("body", mail.body);
+  form.append("emailId", mail.to);
+  form.append(
+    "imageUrls",
+    new Blob([mail.attachment.content], { type: mail.attachment.contentType }),
+    mail.attachment.filename
+  );
+
+  const response = await fetch(EMAIL_API_URL, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(EMAIL_TIMEOUT_MS),
   });
+
+  if (!response.ok) {
+    throw new Error(`mail service returned HTTP ${response.status}`);
+  }
+
+  const result = (await response.json().catch(() => null)) as {
+    successFlag?: boolean;
+  } | null;
+  if (!result?.successFlag) {
+    throw new Error("mail service did not confirm delivery");
+  }
+};
 
 // Function to get all active anchor users
 const getActiveAnchorUsers = async (db: Firestore) => {
@@ -107,20 +151,23 @@ const getDealerDataForAnchor = async (db: Firestore, anchorId: string) => {
   });
 };
 
-// Common Email Wrapper Template with Supermoney Branding
-const wrapEmailTemplate = (content: string) => `
-    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
-      <div style="text-align: center; margin-bottom: 20px;">
-        <img src="https://www.supermoney.in/supermoney-powerd-logo.png" alt="Supermoney Logo" style="width: 150px; height: auto;">
-      </div>
-      ${content}
-      <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
-        <p style="font-size: 12px; color: #7f8c8d;">This is an automated MIS report. For real-time updates, please login to the portal.</p>
-        <a href="https://anchor.supermoney.in" style="background-color: #3498db; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">Login to Portal</a>
-      </div>
-      <p style="margin-top: 30px; font-size: 14px;">Thank you,<br><strong>The Supermoney Team</strong></p>
-    </div>
-`;
+/**
+ * Plain-text body wrapper.
+ *
+ * The mail service does NOT render HTML — it delivers `body` verbatim, so any
+ * tags sent here arrive as visible markup (verified against the live endpoint:
+ * a body of `<h2>HTML check</h2>` was received by the recipient as exactly that
+ * string). Everything below is therefore plain text. The branded logo, heading
+ * colours and the button styling are gone as a result: the only way to keep them
+ * would be to have the service render HTML, which it does not.
+ */
+const buildEmailBody = (content: string) => `${content}
+
+This is an automated MIS report. For real-time updates, please login to the portal:
+https://anchor.supermoney.in
+
+Thank you,
+The Supermoney Team`;
 
 type RunMode = "api" | "test";
 type SendOutcome = "sent" | "skipped";
@@ -168,8 +215,6 @@ const runMISReport = async (options: RunOptions): Promise<RunSummary> => {
     return summary;
   }
 
-  const transporter = buildTransporter();
-
   for (const user of users) {
     // In test mode, deliver the first eligible anchor's report to the test address only.
     const recipient = options.testRecipient ? options.testRecipient : user.emailAddress;
@@ -179,7 +224,7 @@ const runMISReport = async (options: RunOptions): Promise<RunSummary> => {
     }
 
     try {
-      const outcome = await sendReportForAnchor(db, transporter, user, recipient);
+      const outcome = await sendReportForAnchor(db, user, recipient);
       if (outcome === "sent") {
         summary.emailsSent += 1;
       } else {
@@ -187,7 +232,10 @@ const runMISReport = async (options: RunOptions): Promise<RunSummary> => {
       }
     } catch (emailError) {
       summary.emailsFailed += 1;
-      console.error(`Failed to send email to ${user.emailAddress}:`, emailError);
+      // Log the address the mail actually went to. In test mode that is the test
+      // recipient, never the anchor — logging `user.emailAddress` here reads as
+      // "we mailed this anchor" and misdirects debugging.
+      console.error(`Failed to send report for ${user.externalId} to ${recipient}:`, emailError);
     }
 
     if (options.testRecipient) break;
@@ -216,12 +264,15 @@ const recordRun = async (db: Firestore, summary: RunSummary): Promise<void> => {
  */
 const sendReportForAnchor = async (
   db: Firestore,
-  transporter: nodemailer.Transporter,
   user: any,
   recipient: string
 ): Promise<SendOutcome> => {
   const isANC011 = user.externalId === 'ANC011';
   const dealers = await getDealerDataForAnchor(db, user.externalId);
+
+  // The mail service accepts one `emailId` per request, so deliver per address.
+  const recipients = isANC011 ? [recipient, ANC011_EXTRA_RECIPIENT] : [recipient];
+  const reportDate = new Date().toISOString().split('T')[0];
 
   if (isANC011) {
     const csvFields = [
@@ -235,30 +286,28 @@ const sendReportForAnchor = async (
     const json2csvParser = new Parser({ fields: csvFields });
     const csv = json2csvParser.parse(dealers);
 
-    const content = `
-        <h2 style="color: #3498db; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Daily Limit Utilization Summary</h2>
-        <p>Dear Team,</p>
-        <p>Please find below the Daily Limit Utilization Summary for <strong>${user.userName}</strong>.</p>
+    const content = `Daily Limit Utilization Summary
 
-        <div style="background-color: #f9f9f9; border-left: 4px solid #3498db; padding: 15px; margin: 20px 0;">
-          <h3 style="margin-top: 0; color: #2c3e50;">📊 Daily Limit Utilization</h3>
-          <p style="font-size: 14px; margin-bottom: 0;">The attached CSV contains the Dealer Tab View for all dealers mapped to your account, providing a consolidated view of current limit utilization.</p>
-        </div>
-    `;
+Dear Team,
 
-    await transporter.sendMail({
-      from: `"Supermoney Platform" <noreply@supermoney.in>`,
-      to: [recipient, 'channelfinance.in@redingtongroup.com'],
-      subject: "Supermoney Daily Limit Utilization Summary",
-      html: wrapEmailTemplate(content),
-      attachments: [
-        {
-          filename: `Limit_Utilization_Report_${new Date().toISOString().split('T')[0]}.csv`,
+Please find below the Daily Limit Utilization Summary for ${user.userName}.
+
+DAILY LIMIT UTILIZATION
+The attached CSV contains the Dealer Tab View for all dealers mapped to your account, providing a consolidated view of current limit utilization.`;
+
+    const body = buildEmailBody(content);
+    for (const to of recipients) {
+      await sendEmail({
+        to,
+        subject: "Supermoney Daily Limit Utilization Summary",
+        body,
+        attachment: {
+          filename: `Limit_Utilization_Report_${reportDate}.csv`,
           content: csv,
-          contentType: 'text/csv'
+          contentType: "text/csv",
         },
-      ],
-    });
+      });
+    }
     return "sent";
   }
 
@@ -275,31 +324,29 @@ const sendReportForAnchor = async (
   const json2csvParser = new Parser({ fields: csvFields });
   const csv = json2csvParser.parse(overdueDealers);
 
-  const content = `
-      <h2 style="color: #3498db; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Daily Overdue Summary</h2>
-      <p>Hello ${user.userName},</p>
-      <p>Here is your daily summary of outstanding payments from the Supermoney Anchor Platform.</p>
+  const content = `Daily Overdue Summary
 
-      <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; border-left: 4px solid #3498db; margin: 20px 0;">
-        <h3 style="margin-top: 0; color: #333;">Overdue Summary</h3>
-        <p>Total overdue amount: <strong>${formattedAmount}</strong></p>
-        <p>Number of dealers with overdue payments: <strong>${overdueDealers.length}</strong></p>
-      </div>
-  `;
+Hello ${user.userName},
 
-  await transporter.sendMail({
-    from: `"Supermoney Platform" <noreply@supermoney.in>`,
-    to: recipient,
-    subject: "Supermoney Daily Overdue Report",
-    html: wrapEmailTemplate(content),
-    attachments: [
-      {
-        filename: `Daily_Overdue_Report_${new Date().toISOString().split('T')[0]}.csv`,
+Here is your daily summary of outstanding payments from the Supermoney Anchor Platform.
+
+OVERDUE SUMMARY
+Total overdue amount: ${formattedAmount}
+Number of dealers with overdue payments: ${overdueDealers.length}`;
+
+  const body = buildEmailBody(content);
+  for (const to of recipients) {
+    await sendEmail({
+      to,
+      subject: "Supermoney Daily Overdue Report",
+      body,
+      attachment: {
+        filename: `Daily_Overdue_Report_${reportDate}.csv`,
         content: csv,
-        contentType: 'text/csv'
+        contentType: "text/csv",
       },
-    ],
-  });
+    });
+  }
   return "sent";
 };
 
@@ -328,7 +375,9 @@ export const sendDailyReports = functions
   .runWith({
     timeoutSeconds: 540,
     memory: "512MB",
-    secrets: [...SMTP_SECRETS, API_KEY_SECRET],
+    // SMTP_USER / SMTP_PASS are gone: delivery no longer uses SMTP, so the
+    // function holds no mail credential at all.
+    secrets: [API_KEY_SECRET],
   })
   .https.onRequest(async (req, res) => {
     const expected = process.env[API_KEY_SECRET];
