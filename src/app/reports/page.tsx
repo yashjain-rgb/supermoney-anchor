@@ -2,7 +2,8 @@
 import { unstable_noStore as noStore } from 'next/cache';
 import PageHeader from "@/components/page-header";
 import { getSession } from '@/lib/session';
-import { getInvoices, getDealers, getPrograms, getUsers, getDealerLimits, getMomentumDealerLeads } from '@/lib/data';
+import { getInvoices, getDealers, getPrograms, getUsers, getDealerLimits } from '@/lib/data';
+import { getMomentumDealerLeads } from '@/lib/leads-data';
 import ReportsClientPage from './client-page';
 
 export default async function ReportsPage() {

@@ -27,7 +27,7 @@ graph TB
 
     subgraph Data["Data Layer — Firebase Firestore"]
         DB1[("db1: anchorlink-g5wbd<br/>database: 'live'<br/>users | programs | dealers<br/>invoices | dealerLimits<br/>upcomingPayments | invoiceConsents")]
-        DB2[("db2: supermoney-sales-hub<br/>default database<br/>dealers | vendors<br/>(momentum leads)")]
+        DB2[("db2: supermoney-sales-hub<br/>database: 'prod'<br/>dealers | vendors<br/>(momentum leads)")]
     end
 
     subgraph BgJobs["Background Jobs"]

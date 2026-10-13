@@ -1,10 +1,8 @@
 
 "use server";
 
-import { db2 } from "@/lib/firebase";
-import { collection, addDoc } from "firebase/firestore";
+import { getLeadScope, leadCollection, leadsDb } from "@/lib/leads-data";
 import { z } from "zod";
-import { getSession } from "@/lib/session";
 
 const leadFormSchema = z.object({
   name: z.string().min(1, "Name is required."),
@@ -34,17 +32,17 @@ export async function addSingleLead(data: LeadFormValues): Promise<ActionResult>
     console.error("Form validation failed:", validatedFields.error.flatten().fieldErrors);
     return { error: "Invalid data provided. Please check the form." };
   }
-  
-  const session = await getSession();
-  
-  // The user's Firestore document ID, e.g., "8eqZodWO89So7VApzCef", is stored in session.id
-  const anchorId = session?.leadExternalId || '';
-  const anchorName = session?.userName || 'Supermoney Admin';
 
-  if (session?.roleType === 'Anchor' && !anchorId) {
-      console.warn("Anchor user is creating a lead but does not have a user ID in their session.");
+  // Firestore rules no longer guard the leads database, so the session is the only
+  // authorization layer here — an Anchor may only create leads under its own id.
+  const scope = await getLeadScope();
+  if (!scope) {
+    return { error: "You must be logged in to add a lead." };
   }
-  
+
+  const anchorId = scope.anchorId || '';
+  const anchorName = scope.session.userName || 'Supermoney Admin';
+
   const { leadCategory, dealValue, contactNumber, ...rest } = validatedFields.data;
 
   const leadData = {
@@ -62,18 +60,14 @@ export async function addSingleLead(data: LeadFormValues): Promise<ActionResult>
     contactNumbers: [{ value: contactNumber }], // New format
   };
 
-  console.log({leadData, session, anchorId, anchorName});
-
   try {
-    const collectionName = leadCategory.toLowerCase() === 'dealer' ? "dealers" : "vendors";
-    const docRef = await addDoc(collection(db2, collectionName), leadData);
-    
+    const collectionName = leadCollection(leadCategory);
+    await leadsDb.collection(collectionName).add(leadData);
+
     return { message: `Lead "${leadData.name}" added successfully to ${collectionName}.` };
   } catch (error) {
     console.error("Error writing to Firestore:", error);
-    if (error instanceof Error) {
-        return { error: `Failed to add lead: ${error.message}` };
-    }
-    return { error: "An unknown error occurred while writing to Firestore." };
+    // Never surface the raw error to the client (R11).
+    return { error: "Failed to add lead. Please try again." };
   }
 }

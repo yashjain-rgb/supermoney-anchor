@@ -59,7 +59,7 @@ Only one Next.js file uses the Admin SDK — `src/app/sendDailyReports/route.ts`
 The app connects to **two separate Firebase projects**, initialized in `src/lib/firebase.ts`:
 
 - **`db1`** (`anchorlink-g5wbd`, database `live`) — Primary app data: `users`, `programs`, `dealers`, `invoices`, `dealerLimits`, `upcomingPayments`, `invoiceConsents`
-- **`db2`** (`supermoney-sales-hub`, default database) — Sales/momentum dealer leads in `dealers` and `vendors` collections
+- **`db2`** (`supermoney-sales-hub`, database `prod`) — Sales/momentum dealer leads in `dealers` and `vendors` collections
 
 ## Authentication & Sessions
 

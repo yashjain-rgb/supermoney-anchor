@@ -2,7 +2,7 @@
 'use server';
 
 import { unstable_noStore as noStore } from 'next/cache';
-import { getMomentumDealerLeadById } from '@/lib/data';
+import { getMomentumDealerLeadById } from '@/lib/leads-data';
 import { notFound } from 'next/navigation';
 import LeadDetailClientPage from './client-page';
 import { getSession } from '@/lib/session';
