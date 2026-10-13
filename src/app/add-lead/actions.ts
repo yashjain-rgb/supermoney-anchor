@@ -9,9 +9,11 @@ const leadFormSchema = z.object({
   leadCategory: z.enum(["Dealer", "Vendor"], { required_error: "Lead Category is required."}),
   contactNumber: z.string().regex(/^\d{10}$/, "Contact number must be exactly 10 digits."),
   spoc: z.string().min(1, "SPOC is required."),
+  // Required: the CRM stores these as non-nullable strings and rejects a null,
+  // so a lead must never be created without them.
+  email: z.string().email("Invalid email address."),
+  city: z.string().min(1, "City is required."),
   // Optional fields
-  email: z.string().email("Invalid email address.").optional().or(z.literal("")),
-  city: z.string().optional(),
   state: z.string().optional(),
   zone: z.string().optional(),
   dealValue: z.string().optional(),
@@ -43,14 +45,21 @@ export async function addSingleLead(data: LeadFormValues): Promise<ActionResult>
   const anchorId = scope.anchorId || '';
   const anchorName = scope.session.userName || 'Supermoney Admin';
 
-  const { leadCategory, dealValue, contactNumber, ...rest } = validatedFields.data;
+  const { leadCategory, dealValue, contactNumber, state, zone, ...rest } = validatedFields.data;
 
   const leadData = {
     ...rest,
+    // Optional strings still land as "" rather than being absent, because the
+    // CRM's schemas are non-nullable and reject a null on its write path.
+    state: state ?? '',
+    zone: zone ?? '',
     anchorId: anchorId,
     anchorName: anchorName,
     dealValue: dealValue ? Number(dealValue) : 0,
-    remarks: [], // Start with empty remarks
+    // `remarks` is deliberately not written here. The CRM stores it as a map of
+    // { text, timestamp, userName }, and seeding `[]` used to leave a document
+    // the CRM could not save. leads/[id]/actions.ts creates the map on the first
+    // remark instead.
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     status: "New",

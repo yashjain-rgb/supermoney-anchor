@@ -9,13 +9,34 @@ type ActionResult = {
   error?: string;
 };
 
+const REQUIRED_LEAD_COLUMNS = ['Email', 'SPOC', 'City'];
+
+/**
+ * Builds the remark in the shape the CRM stores: a map of id -> { text, timestamp,
+ * userName }, where all three value fields are required. Returns null for a blank
+ * cell so the caller can omit the field entirely — Firestore rejects `undefined`,
+ * and the array this used to produce is what the CRM could not read.
+ */
+const buildRemarks = (rawRemarks: unknown, userName: string) => {
+  const text = String(rawRemarks ?? '').trim();
+  if (!text) {
+    return null;
+  }
+
+  return {
+    [`remark_${Date.now()}`]: { text, timestamp: new Date().toISOString(), userName },
+  };
+};
+
 // Helper function to map Excel columns to Firestore fields
-const mapLeadData = (lead: any, sessionAnchorId: string, isAnchorUser: boolean) => {
+const mapLeadData = (lead: any, sessionAnchorId: string, isAnchorUser: boolean, userName: string) => {
   const leadCategory = (lead['Lead Category'] || '').toLowerCase();
 
   // If the user is an Anchor, always use their session leadExternalId.
   // Otherwise, use the anchorId from the Excel file, or an empty string if not present.
   const anchorId = isAnchorUser ? sessionAnchorId : (lead.anchorId || '');
+
+  const remarks = buildRemarks(lead['Remarks'], userName);
 
   return {
     name: lead['Name'] || '',
@@ -32,7 +53,9 @@ const mapLeadData = (lead: any, sessionAnchorId: string, isAnchorUser: boolean) 
     priority: lead['Priority'] || '',
     dealValue: lead['Deal Value (Lacs)'] ? Number(lead['Deal Value (Lacs)']) : 0,
     lender: lead['Lender'] || '',
-    remarks: lead['Remarks'] ? [{ remark: lead['Remarks'], timestamp: new Date().toISOString() }] : [],
+    // Omitted rather than written empty: the CRM reads this as a map, so an
+    // absent field is fine while an array is not.
+    ...(remarks ? { remarks } : {}),
     spoc: lead['SPOC'] || '',
 
     // System-generated fields
@@ -61,6 +84,7 @@ export async function addMomentumLeads(formData: FormData): Promise<ActionResult
 
   const isAnchorUser = scope.session.roleType === 'Anchor';
   const sessionAnchorId = scope.anchorId || '';
+  const sessionUserName = scope.session.userName || 'System';
 
   try {
     const bytes = await file.arrayBuffer();
@@ -77,10 +101,21 @@ export async function addMomentumLeads(formData: FormData): Promise<ActionResult
     const vendorBatch = leadsDb.batch();
     let dealerCount = 0;
     let vendorCount = 0;
-    let skippedCount = 0;
+    let skippedCategoryCount = 0;
+    let skippedMissingFieldsCount = 0;
 
     leadsArray.forEach((row: any) => {
-        const leadData = mapLeadData(row, sessionAnchorId, isAnchorUser);
+        // The CRM rejects a null, so a row missing any of these cannot become a
+        // lead the CRM is able to save.
+        const hasBlankRequiredField = REQUIRED_LEAD_COLUMNS.some(
+            (column) => !String(row[column] ?? '').trim()
+        );
+        if (hasBlankRequiredField) {
+            skippedMissingFieldsCount++;
+            return;
+        }
+
+        const leadData = mapLeadData(row, sessionAnchorId, isAnchorUser, sessionUserName);
 
         if (leadData.leadCategory.toLowerCase() === 'dealer') {
             dealerBatch.set(leadsDb.collection("dealers").doc(), leadData);
@@ -89,7 +124,7 @@ export async function addMomentumLeads(formData: FormData): Promise<ActionResult
             vendorBatch.set(leadsDb.collection("vendors").doc(), leadData);
             vendorCount++;
         } else {
-            skippedCount++;
+            skippedCategoryCount++;
         }
     });
 
@@ -101,8 +136,11 @@ export async function addMomentumLeads(formData: FormData): Promise<ActionResult
     }
 
     let message = `${dealerCount} Dealer lead(s) and ${vendorCount} Vendor lead(s) added successfully.`;
-    if (skippedCount > 0) {
-        message += ` ${skippedCount} rows were skipped due to an invalid 'Lead Category'.`;
+    if (skippedCategoryCount > 0) {
+        message += ` ${skippedCategoryCount} rows were skipped due to an invalid 'Lead Category'.`;
+    }
+    if (skippedMissingFieldsCount > 0) {
+        message += ` ${skippedMissingFieldsCount} rows were skipped because Email, SPOC or City was blank.`;
     }
 
     return { message };

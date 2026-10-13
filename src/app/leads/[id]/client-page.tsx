@@ -157,7 +157,7 @@ export default function LeadDetailClientPage({ initialLead, user }: LeadDetailCl
                                         {paginatedRemarks && paginatedRemarks.length > 0 ? (
                                             paginatedRemarks.map((remark, index) => (
                                                 <TableRow key={index}>
-                                                    <TableCell className='font-medium'>{remark.user || 'System'}</TableCell>
+                                                    <TableCell className='font-medium'>{remark.user || remark.userName || 'System'}</TableCell>
                                                     <TableCell className='text-muted-foreground'>{remark.remark || remark.text || remark.comment}</TableCell>
                                                     <TableCell className='text-right'>{formatDate(remark.timestamp)}</TableCell>
                                                 </TableRow>

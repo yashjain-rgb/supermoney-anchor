@@ -60,7 +60,7 @@ export default function ReportsClientPage({ initialInvoices, initialDealers, ini
                 const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
                 return timeB - timeA;
             })
-            .map(r => `${r.user || 'System'}: ${r.remark || r.text || r.comment || ''} (${formatDateDash(r.timestamp)})`)
+            .map(r => `${r.user || r.userName || 'System'}: ${r.remark || r.text || r.comment || ''} (${formatDateDash(r.timestamp)})`)
             .join(" | ");
     };
 

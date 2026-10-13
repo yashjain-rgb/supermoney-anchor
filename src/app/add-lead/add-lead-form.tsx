@@ -31,9 +31,11 @@ const leadFormSchema = z.object({
   leadCategory: z.enum(["Dealer", "Vendor"], { required_error: "Lead Category is required." }),
   spoc: z.string().min(1, "SPOC is required."),
   contactNumber: z.string().regex(/^\d{10}$/, "Contact number must be exactly 10 digits."),
+  // Required: the CRM stores these as non-nullable strings and rejects a null,
+  // so a lead must never be created without them.
+  email: z.string().email("Invalid email address."),
+  city: z.string().min(1, "City is required."),
   // Optional fields
-  email: z.string().email("Invalid email address.").optional().or(z.literal("")),
-  city: z.string().optional(),
   state: z.string().optional(),
   zone: z.string().optional(),
   dealValue: z.string().optional(),
@@ -123,7 +125,7 @@ export default function AddLeadForm() {
                 <FormItem><FormLabelWithAsterisk>Contact Number</FormLabelWithAsterisk><FormControl><Input type="tel" placeholder="e.g., 9876543210" {...field} /></FormControl><FormMessage /></FormItem>
             )}/>
             <FormField control={form.control} name="email" render={({ field }) => (
-                <FormItem><FormLabel>Email</FormLabel><FormControl><Input type="email" placeholder="e.g., contact@example.com" {...field} /></FormControl><FormMessage /></FormItem>
+                <FormItem><FormLabelWithAsterisk>Email</FormLabelWithAsterisk><FormControl><Input type="email" placeholder="e.g., contact@example.com" {...field} /></FormControl><FormMessage /></FormItem>
             )}/>
              <FormField control={form.control} name="state" render={({ field }) => (
                 <FormItem><FormLabel>State</FormLabel>
@@ -134,7 +136,7 @@ export default function AddLeadForm() {
                 </FormItem>
             )}/>
             <FormField control={form.control} name="city" render={({ field }) => (
-                <FormItem><FormLabel>City</FormLabel>
+                <FormItem><FormLabelWithAsterisk>City</FormLabelWithAsterisk>
                     <Select onValueChange={field.onChange} value={field.value} disabled={!selectedState}>
                         <FormControl><SelectTrigger><SelectValue placeholder="Select a city" /></SelectTrigger></FormControl>
                         <SelectContent>{availableCities.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
