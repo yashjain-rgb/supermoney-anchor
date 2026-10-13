@@ -1,6 +1,7 @@
 import { unstable_noStore as noStore } from 'next/cache';
 import DashboardClient from './client-page';
-import { getPrograms, getDealers, getMomentumDealerLeads } from '@/lib/data';
+import { getPrograms, getDealers } from '@/lib/data';
+import { getMomentumDealerLeads } from '@/lib/leads-data';
 import { getSession } from '@/lib/session';
 import { db1 } from '@/lib/firebase';
 import { collection, getDocs, query, where, collectionGroup } from 'firebase/firestore';

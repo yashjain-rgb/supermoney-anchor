@@ -2,7 +2,8 @@
 'use server';
 
 import { ai } from '@/ai/genkit';
-import { getDealers, getInvoices, getPrograms, getMomentumDealerLeads } from '@/lib/data';
+import { getDealers, getInvoices, getPrograms } from '@/lib/data';
+import { getMomentumDealerLeads } from '@/lib/leads-data';
 import { z } from 'zod';
 
 const ToolInputSchema = z.object({

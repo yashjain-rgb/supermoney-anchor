@@ -1,0 +1,58 @@
+name: Sync GitHub to GitLab
+
+on:
+  push:
+    branches: ["live"]
+
+jobs:
+  sync:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout GitHub Repo
+        uses: actions/checkout@v4
+
+      - name: Prepare GitLab Repo
+        run: |
+          BASE_DIR="/home/github-runner/anchor-actions-runner/anchor"
+          REPO_DIR="$BASE_DIR/supermoney-anchor-web"
+
+          mkdir -p $BASE_DIR
+          cd $BASE_DIR
+
+          # Clone only if not exists
+          if [ ! -d "$REPO_DIR/.git" ]; then
+            echo "Cloning GitLab repo..."
+            rm -rf $REPO_DIR
+            git clone -b live git@gitlab.mintwalk.com:ritik/supermoney-anchor-web.git
+          fi
+
+          cd $REPO_DIR
+
+          # Always reset to clean state
+          git fetch origin
+          git reset --hard origin/live
+          git clean -fd
+
+      - name: Sync GitHub code to GitLab repo
+        run: |
+          rsync -av --delete \
+            --exclude='.git' \
+            ./ /home/github-runner/anchor-actions-runner/anchor/supermoney-anchor-web/
+
+      - name: Commit and Push to GitLab
+        run: |
+          cd /home/github-runner/anchor-actions-runner/anchor/supermoney-anchor-web
+
+          git config user.name "GitHub Actions"
+          git config user.email "github-actions@mintwalk.com"
+
+          git add .
+
+          # Commit only if changes exist
+          if ! git diff --cached --quiet; then
+            git commit -m "Sync from GitHub (live)"
+            git push origin live --force
+          else
+            echo "No changes to commit"
+          fi

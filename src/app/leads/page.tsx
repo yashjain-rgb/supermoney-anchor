@@ -1,17 +1,14 @@
 
 import { unstable_noStore as noStore } from 'next/cache';
-import { getSession } from "@/lib/session";
-import { getMomentumDealerLeads } from "@/lib/data";
+import { getMomentumDealerLeads } from "@/lib/leads-data";
 import LeadsClientPage from './client-page';
 
 export default async function LeadsPage() {
   noStore();
-  const session = await getSession();
-  
-  // If user is an anchor, use their leadExternalId to filter. Otherwise, fetch all leads.
-  const anchorId = session?.roleType === 'Anchor' ? session?.leadExternalId : undefined;
-  
-  const momentumLeads = await getMomentumDealerLeads(anchorId);
+
+  // Scoping is derived from the session inside getMomentumDealerLeads: Anchors see
+  // only their own leads, other portal roles see the full pipeline.
+  const momentumLeads = await getMomentumDealerLeads();
   
   return (
     <>
